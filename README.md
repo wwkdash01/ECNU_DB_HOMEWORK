@@ -298,6 +298,93 @@ git add -An                 # 确认 .env 不在待提交列表里
 
 ---
 
+## 复现实验
+
+按顺序执行即可。**只有第 3 步会花钱**（全实验约 ¥7）。
+
+### 前置
+
+```bash
+cd ~/db_agent
+
+# ① 环境 + 依赖（见「快速开始」，含官方评测脚本依赖 func_timeout/psycopg2-binary/pymysql）
+conda activate db_agent
+
+# ② 数据（见「数据准备」）：把 MINIDEV 摆到 data/，生成 .jsonl，clone 官方评测脚本
+~/.conda/envs/db_agent/bin/python gate1_check.py     # 期望 23/23 通过
+
+# ③ 密钥：.env 写入 DEEPSEEK_API_KEY=sk-...
+~/.conda/envs/db_agent/bin/python gate0_check.py     # 期望 Gate 0 通过
+```
+
+### 跑五组
+
+每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）：
+
+```bash
+for G in O1 O3 A1 A2 A3; do
+  ~/.conda/envs/db_agent/bin/python run.py --group $G
+done
+```
+
+| 组 | 方法 | 温度 | 工具 |
+| --- | --- | --- | --- |
+| `O1` | one-shot ×1 | 0.0 | — |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — |
+| `A1` | agent 循环 | 0.0 | `run_sql` |
+| `A2` | agent 循环 | 0.0 | + `get_column_values` |
+| `A3` | agent 循环 | 0.0 | + `get_column_desc` |
+
+冒烟（固定取前 N 条，不花钱在评测上）：
+
+```bash
+~/.conda/envs/db_agent/bin/python run.py --group A1 --limit 20 --out A1_smoke.jsonl
+```
+
+> **`--out` 很重要**：不加它，`--limit 20` 会去读 `<group>.jsonl` 的断点记录；
+> 若该文件已是全量 500 条，前 20 题会被判定"已完成"从而**一题不跑**。
+
+### 判分
+
+```bash
+for G in O1 O3 A1 A2 A3; do
+  ~/.conda/envs/db_agent/bin/python score.py --group $G
+done
+```
+
+产出 `results/<group>_scored.jsonl`，含 EX、列级召回、幻觉率、逐轮 EX@k。
+
+### 验收
+
+```bash
+~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点（23 项）
+~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（45 项，不发 API）
+~/.conda/envs/db_agent/bin/python gate2_check.py              # 另跑 1 题 A1 做端到端校验
+```
+
+### 规模与耗时（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 样本 | 500 题 / 11 库 / 79 表 |
+| 总调用 | 约 6,200 次 |
+| 总耗时 | 约 15 分钟（并发 5） |
+| 总成本 | 约 **$1.0（¥7）** |
+| 限流 | 0 次 429 |
+
+### 复现时最容易踩的坑
+
+| 坑 | 症状 | 处理 |
+| --- | --- | --- |
+| `data/` 多一层目录 | `FileNotFoundError` | 见「数据准备」步骤 2 |
+| 未装评测脚本依赖 | `ModuleNotFoundError: psycopg2` | `pip install func_timeout psycopg2-binary pymysql` |
+| GitHub 拉不动 | `HTTP2 framing layer` 报错 | `git -c http.version=HTTP/1.1 clone ...` |
+| `card_games` 打不开 | `unable to open database file` | 该库是 WAL 模式，`get_conn` 已内置 `immutable=1` 回退 |
+| 用 `question_id` 做断点 key | 只跑出 498 条 | 已改用 `qidx`（`question_id` 有 2 个重复值） |
+| 实验结论 | 见 [`实验结论.md`](实验结论.md) | — |
+
+---
+
 ## 依赖清单
 
 ### 直接依赖
