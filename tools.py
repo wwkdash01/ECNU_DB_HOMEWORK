@@ -85,16 +85,40 @@ def _cut_values(prefix, vals):
     return f"{prefix}：{kept}{tail}"
 
 
+def report_shape(conn, sql, max_rows=20):
+    """（独立执行版，保留给需要单独跑一次的场景）见 _run_sql 内的 shape_of 用法。"""
+    cur = conn.execute(sql)
+    cols = [d[0] for d in (cur.description or [])]
+    rows = cur.fetchmany(max_rows + 1)
+    truncated = len(rows) > max_rows
+    return cols, rows[:max_rows], truncated
+
+
+def shape_of(cols):
+    """把列名列表格式化成给模型看的形态串。
+
+    ★ 为什么必须回报形态（本仓库实测）：
+      A1 的 220 条 result_mismatch 中，45% 的错误结果【列数】与 gold 不符
+      （99/220），而模型此前只收到"返回 N 行"，完全不知道自己的结果有几列。
+      典型错法：问 "who had the least" 却返回 (CustomerID, total) 两列——
+      核心值对，但多带了"佐证列"；官方 EX 是 set(pred)==set(gold)，多一列即判错。
+      让模型看见列数，它就能在不看 gold 的情况下自查"问题只问了 who，我给了 2 列"。
+    """
+    return f"{len(cols)} 列（{', '.join(str(c) for c in cols)}）"
+
+
 def _run_sql(conn, sql):
     try:
-        r = execute(conn, sql)
+        r = execute(conn, sql)          # execute 现已返回 cols
     except QueryTimeout as e:
         return _cut(f"执行失败：{e}"), None
     except Exception as e:
         return _cut(f"执行失败：{e}"), None     # 报错原样回灌，模型多半能自己修
     tail = "（结果被截断）" if r["truncated"] else ""
-    # 刻意只给 3 行预览：完整结果不从这里出去，见模块 docstring
-    return _cut(f"执行成功，返回 {len(r['rows'])} 行{tail}。预览：{r['rows'][:3]}"), r["qet"]
+    # 刻意只给 3 行预览：完整结果不从这里出去，见模块 docstring。
+    # 但【形态】必须给全 —— 列数与列名是模型唯一的自查依据。
+    return _cut(f"执行成功，返回 {len(r['rows'])} 行，{shape_of(r['cols'])}{tail}。"
+                f"预览：{r['rows'][:3]}"), r["qet"]
 
 
 def _col_values(conn, db_id, table, column):
@@ -131,10 +155,13 @@ def _submit(conn, db_id, sql):
     if not _QUERY_RE.match(sql):
         return f"提交失败：不是一条查询语句。请提交 SELECT/WITH 查询。收到：{sql[:120]}", None
     try:
-        execute(conn, sql)
+        r = execute(conn, sql)
     except Exception as e:
         return f"提交失败：该 SQL 无法执行（{e}）。请修正后重新提交。", None
-    return f"已收到最终答案：{_cut(sql)}", None
+    return (f"已收到最终答案：{_cut(sql)}\n"
+            f"该答案的结果形态：{len(r['rows'])} 行，{shape_of(r['cols'])}。\n"
+            f"请自行确认：这个列数与列名正是问题所要求的吗？若多带了佐证列，"
+            f"请修正后重新提交。"), None
 
 
 def dispatch(conn, db_id, name, args):

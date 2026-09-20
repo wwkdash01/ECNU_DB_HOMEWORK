@@ -62,15 +62,18 @@ def run_one(q, group):
     }
 
 
-def main(group, limit=None, concurrency=None):
+def main(group, limit=None, concurrency=None, out=None):
     config.RESULTS_DIR.mkdir(exist_ok=True)
     qs = load_questions()
     if limit:
         qs = qs[:limit]                                  # 冒烟：固定取前 N 条
-    out_path = config.RESULTS_DIR / f"{group}.jsonl"
+    # --out 允许把实验写到独立文件（如 A1v2.jsonl）。
+    # 否则 --limit 20 会去读 <group>.jsonl 的断点记录，若该文件已是全量 500 条，
+    # 前 20 题会被判为"已完成"从而一题不跑（本仓库实测踩到过）。
+    out_path = config.RESULTS_DIR / (out or f"{group}.jsonl")
     done = load_done(out_path)
     todo = [q for q in qs if q["qidx"] not in done]
-    print(f"[{group}] 待跑 {len(todo)}（已完成 {len(done)}）")
+    print(f"[{group}] 输出 {out_path.name}  待跑 {len(todo)}（已完成 {len(done)}）")
 
     with open(out_path, "a", encoding="utf-8") as f, \
          ThreadPoolExecutor(concurrency or config.CONCURRENCY) as ex:
@@ -92,5 +95,7 @@ if __name__ == "__main__":
     ap.add_argument("--group", required=True, choices=list(GROUPS))
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--concurrency", type=int, default=None)
+    ap.add_argument("--out", default=None,
+                    help="输出文件名（默认 <group>.jsonl）。跑变体实验时用它避免覆盖全量")
     a = ap.parse_args()
-    main(a.group, a.limit, a.concurrency)
+    main(a.group, a.limit, a.concurrency, a.out)

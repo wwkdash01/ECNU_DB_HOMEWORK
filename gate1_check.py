@@ -5,6 +5,7 @@
 # 每条独立判定 PASS/FAIL，最后统一汇总；不因单条失败而中断，方便一次看全。
 import json, sqlite3, sys
 from collections import Counter
+from tqdm import tqdm
 import config
 from data import (load_questions, build_context, schema_whitelist,
                   schema_text, desc_index, db_path)
@@ -49,7 +50,7 @@ def main():
     # ------------------------------------------------- 标准 2：build_context 确定性
     print("\n--- 标准 2：build_context 确定性 ---")
     ok_all = True
-    for q in qs:
+    for q in tqdm(qs, desc="build_context 确定性", unit="题", ncols=88):
         a = build_context(q["db_id"], q.get("evidence"))
         b = build_context(q["db_id"], q.get("evidence"))
         if a != b:

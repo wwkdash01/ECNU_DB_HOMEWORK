@@ -22,6 +22,7 @@ import argparse
 from collections import defaultdict
 
 from func_timeout import func_timeout, FunctionTimedOut
+from tqdm import tqdm
 
 import config
 from data import load_questions
@@ -60,27 +61,31 @@ def judge(pred_sql, gold_sql, db_id, timeout=JUDGE_TIMEOUT):
         return 0, "exec_error"
 
 
-def main(group):
+def main(group, out=None):
     gold = load_gold()
     qs = load_questions()
 
     # 下标对齐是 score.py 的命门：错位会让 EX 整体偏低且看不出原因
     assert len(gold) == len(qs), f"gold {len(gold)} 行 vs 题目 {len(qs)} 条"
-    in_path = config.RESULTS_DIR / f"{group}.jsonl"
+    in_path = config.RESULTS_DIR / (out or f"{group}.jsonl")
     recs = [json.loads(l) for l in open(in_path, encoding="utf-8")]
     recs = [r for r in recs if r.get("failure_type") != "api_error" and "final_sql" in r]
-    print(f"[{group}] 读入 {len(recs)} 条（已剔除 api_error 与无 final_sql 的记录）")
+    print(f"[{group}] 读入 {len(recs)} 条（来自 {in_path.name}，"
+          f"已剔除 api_error 与无 final_sql 的记录）")
 
     n_api_error = sum(1 for l in open(in_path, encoding="utf-8")
                       if json.loads(l).get("failure_type") == "api_error")
 
     ex_at_k = defaultdict(lambda: defaultdict(int))     # （保留：按难度分层的命中）
     first_ok = {}                    # qidx -> 第一次答对的轮次 k
-    per_q_correct = {}               # k -> 该轮内有任一正确候选的题数
+    max_k = 0                        # 观察到的最大轮次
     recall_missing = defaultdict(int)
     halluc_missing = 0
 
-    for r in recs:
+    n_exec = 0                      # 累计执行的 SQL 条数
+    n_ok = 0                        # 累计答对题数
+    pbar = tqdm(recs, desc=f"{group} 判分", unit="题", ncols=92)
+    for r in pbar:
         qidx = r.get("qidx")
         if qidx is None:                                # 兼容早期记录
             qidx = next((q["qidx"] for q in qs
@@ -89,6 +94,8 @@ def main(group):
 
         ok, ftype = judge(r.get("final_sql"), gsql, db_id)
         r["is_correct"], r["failure_type"] = ok, ftype
+        n_exec += 1
+        n_ok += ok
 
         # 列级召回
         rec, reason = column_recall(r.get("final_sql"), gsql, db_id)
@@ -112,6 +119,7 @@ def main(group):
         # 这些 SQL 都真实执行过，离线重判无额外成本。
         for t in r.get("turns", []):
             k = t["turn"] + 1
+            max_k = max(max_k, k)
             cands = []
             if t.get("sql"):
                 cands.append(t["sql"])
@@ -126,13 +134,16 @@ def main(group):
                     continue
                 seen.add(s)
                 o, _ = judge(s, gsql, db_id)
+                n_exec += 1
                 if o:
                     first_ok.setdefault(r["qidx"], k)
                     break
-        per_q_correct[k] = per_q_correct.get(k, 0)
+        # 进度条实时反馈
+        pbar.set_postfix_str(f"正确 {n_ok}  已执行 SQL {n_exec}")
 
-    out = config.RESULTS_DIR / f"{group}_scored.jsonl"
-    with open(out, "w", encoding="utf-8") as f:
+    out_path = config.RESULTS_DIR / (
+        (out.rsplit(".jsonl", 1)[0] + "_scored.jsonl") if out else f"{group}_scored.jsonl")
+    with open(out_path, "w", encoding="utf-8") as f:
         for r in recs:
             f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
 
@@ -180,27 +191,27 @@ def main(group):
                  else "前 k 个并行候选" if group == "O3" else "单次调用")
     print(f"    语义: {semantics}  ← 报告里必须区分，O3 的 k 不是迭代轮次")
     print(f"    候选来源: 每轮 [正文 SQL] + [run_sql 参数 SQL] + [submit_answer SQL]")
-    if per_q_correct:
-        kmax = max(per_q_correct)
+    if max_k:
         prev_cum = 0
-        for k in range(1, kmax + 1):
-            # 在恰好第 k 轮首次答对的题数
-            new = sum(1 for v in first_ok.values() if v == k)
+        for k in range(1, max_k + 1):
             cum = sum(1 for v in first_ok.values() if v <= k)
             gain = cum - prev_cum
             print(f"    EX@{k:<2} {cum/n*100:6.2f}%  (+{gain} 题, {gain/n*100:+5.2f}pt)"
                   f"   答对题数 {cum}/{n}")
             prev_cum = cum
-        kstar = next((k for k in range(1, kmax + 1)
+        kstar = next((k for k in range(1, max_k + 1)
                       if sum(1 for v in first_ok.values() if v <= k) == len(first_ok)), None)
         if kstar:
             print(f"    → 全部答对所需轮数 k* = {kstar}"
                   f"  （边际收益在 k* 之后为 0，可用于 cost trade-off 分析）")
 
-    print(f"\n→ {out}")
+    print(f"\n→ {out_path}")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--group", required=True)
-    main(ap.parse_args().group)
+    ap.add_argument("--out", default=None,
+                    help="输入文件名（默认 <group>.jsonl）；输出为同名 _scored.jsonl")
+    a = ap.parse_args()
+    main(a.group, a.out)

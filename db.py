@@ -46,8 +46,10 @@ def execute(conn, sql, row_limit=None, timeout=None):
 
     t0 = time.perf_counter()
     try:
+        cur = conn.execute(sql)
+        cols = [d[0] for d in (cur.description or [])]   # 结果形态：列名（供模型自查）
         # 多取一行用于判断是否被截断
-        rows = conn.execute(sql).fetchmany(row_limit + 1)
+        rows = cur.fetchmany(row_limit + 1)
     except sqlite3.OperationalError as e:
         if state["expired"] or "interrupt" in str(e).lower():
             raise QueryTimeout(f"查询超过 {timeout}s 被中断") from e
@@ -58,4 +60,4 @@ def execute(conn, sql, row_limit=None, timeout=None):
 
     qet = time.perf_counter() - t0
     truncated = len(rows) > row_limit
-    return {"rows": rows[:row_limit], "qet": qet, "truncated": truncated}
+    return {"rows": rows[:row_limit], "cols": cols, "qet": qet, "truncated": truncated}

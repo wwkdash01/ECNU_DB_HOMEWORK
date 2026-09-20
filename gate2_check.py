@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+from tqdm import tqdm
+
 import config
 from data import (load_questions, build_context, get_conn, db_path,
                   schema_whitelist, desc_index)
@@ -197,11 +199,11 @@ def check_prompts():
 
     qs = load_questions()
     bad = []
-    for q in qs:
+    for q in tqdm(qs, desc="prompt 起点一致性", unit="题", ncols=88):
         ctx = build_context(q["db_id"], q.get("evidence"))
         if ctx not in oneshot_prompt(ctx, q["question"]) or ctx not in agent_system(ctx):
             bad.append(q["qidx"])
-    check("3 全部 500 题：context 逐字出现在 O 和 A 两个 prompt 中",
+    check(f"3 全部 {len(qs)} 题：context 逐字出现在 O 和 A 两个 prompt 中",
           not bad, f"不一致：{bad[:5]}（共 {len(bad)}）")
 
     q0 = qs[0]

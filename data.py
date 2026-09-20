@@ -28,14 +28,28 @@ def db_path(db_id):
 
 
 def get_conn(db_id):
-    """只读连接；注意官方 evaluation_utils 用的是普通文件路径，不吃这个 URI 形式"""
-    return sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
+    """只读连接。
+
+    ★ WAL 回退（本仓库实测）：
+      card_games 是【WAL 模式】库（文件头第 19 字节 = 02，其余 10 个库 = 01）。
+      WAL 库在只读打开时需要创建 -shm/-wal 辅助文件，无写权限时直接报
+      "unable to open database file"。故 mode=ro 失败时回退 immutable=1 ——
+      它同样是只读保证（SQLite 承诺不改动文件，且跳过 journal 检查），
+      只是要求连接期间文件不被其他进程改写；评测数据是静态的，满足该条件。
+    """
+    p = db_path(db_id)
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        conn.execute("SELECT 1").fetchone()   # connect 是惰性的，必须真跑一次才知道成败
+        return conn
+    except sqlite3.Error:
+        return sqlite3.connect(f"file:{p}?immutable=1", uri=True)
 
 
 @lru_cache(maxsize=None)
 def schema_whitelist(db_id):
     """{table: set(cols)} —— 工具参数校验 + 幻觉检测"""
-    conn = sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
+    conn = get_conn(db_id)
     out = {}
     for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"):
         cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')}
@@ -48,7 +62,7 @@ def schema_whitelist(db_id):
 @lru_cache(maxsize=None)
 def schema_text(db_id):
     """真实 DDL。sorted 保证确定性 —— Gate 1 会验"""
-    conn = sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
+    conn = get_conn(db_id)
     rows = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
     ).fetchall()
