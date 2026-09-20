@@ -1,0 +1,38 @@
+# ===== 密钥与本地配置：绝不提交 =====
+.env
+.env.local
+.env.*.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# ===== conda（若把环境建在项目内）=====
+env/
+.conda/
+
+# ===== 数据集：体积过大（dev_databases 约 1.4 GB），不提交 =====
+# 由 ~/Downloads/minidev 摆正到 data/，重建方式见 README「数据准备」
+data/dev_databases/
+data/*.sqlite
+# 说明：data/ 下的小文件（mini_dev_sqlite.json / *_gold.sql / *.jsonl / dev_tables.json
+# 合计约 800 KB）**予以版本化**，因为它们是实验口径的一部分，且机器可读。
+
+# ===== 运行产物 =====
+# 如果 results/ 里的产物需要版本化，删掉下面这行
+results/
+*.log
+
+# ===== 下载残留 =====
+minidev.zip
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
