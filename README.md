@@ -62,6 +62,140 @@ python your_script.py
 
 ---
 
+## 数据准备（克隆仓库后必做）
+
+数据集**不在版本库中**：`data/dev_databases/` 约 **1.4 GB**，提交进去不可逆且无必要。
+clone 后必须先按本节重建，否则 `gate1_check.py` 会大面积 FAIL。
+
+### 数据集口径
+
+| 项 | 值 |
+| --- | --- |
+| 数据集 | BIRD **Mini-Dev**，SQLite 版 |
+| 版本 | **V1 / 500 题**（非 V2 / 780 题） |
+| 库数 | 11 |
+| 难度分布 | simple 148 / moderate 250 / challenging 102 |
+| gold 格式 | `mini_dev_sqlite_gold.sql`，制表符分隔，500 行 |
+
+### 步骤 1 · 下载
+
+```bash
+cd ~/Downloads
+curl -L -o minidev.zip "https://bird-bench.oss-cn-beijing.aliyuncs.com/minidev.zip"
+unzip -q minidev.zip
+```
+
+实测约 764 MB / 45 秒。解压后得到 `minidev/MINIDEV/`——**注意比手册多一层**
+（手册说会多一层 `mini_dev_data/`，实际叫 `MINIDEV`）。
+
+### 步骤 2 · 摆正到 `data/`
+
+`config.py` 期望 `data/` 下**直接**是 `dev_databases/` 和 json，**不能多一层**：
+
+```bash
+cd ~/db_agent
+mkdir -p data
+cp ~/Downloads/minidev/MINIDEV/mini_dev_sqlite.json      data/
+cp ~/Downloads/minidev/MINIDEV/mini_dev_sqlite_gold.sql  data/
+cp ~/Downloads/minidev/MINIDEV/dev_tables.json           data/
+cp -a ~/Downloads/minidev/MINIDEV/dev_databases          data/
+```
+
+### 步骤 3 · 生成官方脚本需要的 JSONL
+
+官方 `--diff_json_path` 要 JSONL，而下载包给的是 JSON 数组：
+
+```bash
+~/.conda/envs/db_agent/bin/python - <<'EOF'
+import json
+d = json.load(open('data/mini_dev_sqlite.json', encoding='utf-8'))
+with open('data/mini_dev_sqlite.jsonl', 'w', encoding='utf-8') as f:
+    for i, x in enumerate(d):
+        x['qidx'] = i                 # 唯一标识，见下方「已知陷阱」
+        f.write(json.dumps(x, ensure_ascii=False) + '\n')
+print('写出', len(d), '条')
+EOF
+```
+
+### 步骤 4 · 官方评测脚本
+
+仓库**不含数据库**，只有脚本和示例。评测脚本必须单独获取：
+
+```bash
+git clone --depth 1 https://github.com/bird-bench/mini_dev.git /tmp/bird_mini_dev
+cp -r /tmp/bird_mini_dev/evaluation reference/evaluation
+cp -r /tmp/bird_mini_dev/llm        reference/llm
+rm -rf /tmp/bird_mini_dev
+```
+
+> ⚠️ **GitHub 走 HTTP/2 会报 `Error in the HTTP2 framing layer`**（实测）。加参数绕开：
+> ```bash
+> git -c http.version=HTTP/1.1 clone --depth 1 <url> <dir>
+> ```
+
+评测脚本的依赖**即使只跑 SQLite 也必须装**（`psycopg2`/`pymysql` 写在模块顶层，import 时即执行）：
+
+```bash
+pip install func_timeout psycopg2-binary pymysql
+```
+
+### 步骤 5 · 验收
+
+```bash
+~/.conda/envs/db_agent/bin/python gate1_check.py
+```
+
+应为 **23/23 通过**、退出码 0。
+
+### 已知陷阱（均已实测，`data.py` 已处理）
+
+| 陷阱 | 后果 | 处理 |
+| --- | --- | --- |
+| **4 个 CSV 是 `cp1252` 而非 UTF-8**<br>`european_football_2/{Player,Team}_Attributes.csv`<br>`formula_1/qualifying.csv`、`student_club/Budget.csv` | 按 utf-8 硬读抛 `UnicodeDecodeError`，**A3 组在这些库上整题失败** | `data.py` 用 `utf-8-sig → cp1252 → latin-1` 三级回退 |
+| **CSV 含 BOM** | 首列名变成 `\ufefforiginal_column_name`，解析全空 | 用 `utf-8-sig` 解码 |
+| **`question_id` 有重复值**（137/138 各 2 次） | 用它做断点续跑 key 会**漏跑 2 题**，最终只有 498 条 | 改用 `qidx`（0..499 下标） |
+
+---
+
+## 未纳入版本库的文件
+
+`.gitignore` 屏蔽了以下路径。**clone 后它们都不存在**，需要按上表重建或重新生成。
+
+| 路径 | 体积 | 屏蔽原因 | 如何恢复 |
+| --- | --- | --- | --- |
+| `.env` | 254 B | **含真实 API 密钥**，绝不提交 | `cp .env.example .env` 后填入密钥 |
+| `data/dev_databases/` | **1.4 G** | 体积过大；可从官方重下 | 见「数据准备」步骤 1–2 |
+| `data/*.sqlite` | — | 同上（备用规则） | 同上 |
+| `results/` | 动态 | 运行产物，可随时重跑重生成 | 跑 `run.py` 产出 |
+| `__pycache__/`、`*.py[cod]` | 动态 | Python 字节码，机器相关 | 自动生成 |
+| `.vscode/`、`.idea/` | 小 | 编辑器配置，个人偏好 | 自行配置 |
+| `.DS_Store` | 小 | macOS 目录元数据 | 系统自动生成 |
+| `minidev.zip` | 764 M | 下载残留，解压后即可删 | 见「数据准备」步骤 1 |
+| `*.log` | 动态 | 日志 | 自动生成 |
+
+### 提交前自查
+
+```bash
+git check-ignore -v .env              # 有输出 = 已被正确忽略
+git add -An | grep -E "dev_databases|\.env'"   # 应为空
+```
+
+> ⚠️ **`git add .` 之前务必确认 `data/dev_databases/` 仍被忽略**。
+> 一旦把 1.4 GB 提交进去，历史里删不掉，只能重写历史。
+
+### 版本化的数据文件（对照）
+
+以下 `data/` 下的小文件**已提交**（合计约 800 KB），因为它们是实验口径的一部分：
+
+| 文件 | 说明 |
+| --- | --- |
+| `data/mini_dev_sqlite.json` | 500 题原始题目 |
+| `data/mini_dev_sqlite_gold.sql` | gold SQL，制表符分隔 |
+| `data/mini_dev_sqlite.jsonl` | 官方评测脚本输入 |
+| `data/dev_tables.json` | 数据集 schema 参考 |
+
+---
+
 ## 密钥与配置
 
 API 密钥通过**项目级 `.env` 文件**管理，不使用全局环境变量。`.env` 已被
@@ -94,7 +228,7 @@ DEEPSEEK_API_KEY=sk-your-key-here
 
 ### 代码里怎么读
 
-`config.py` 只存**环境变量名**而非密钥本身，因此该文件可以安全提交：
+密钥的读取**统一封装在 `config.py`**，业务代码不直接碰 `os.environ`：
 
 ```python
 # config.py
@@ -102,34 +236,39 @@ API_KEY_ENV = "DEEPSEEK_API_KEY"
 BASE_URL    = "https://api.deepseek.com"
 MODEL       = "deepseek-flash"
 TEMPERATURE = 0.0
-MAX_TOKENS  = 393216
+
+def require_api_key():
+    """取密钥；缺失时给出可操作的报错，而不是裸 KeyError"""
+    k = os.environ.get(API_KEY_ENV, "").strip()
+    if not k:
+        raise RuntimeError(f"{API_KEY_ENV} 未设置，请在 {ROOT / '.env'} 写入")
+    return k
 ```
 
-调用处：
+`.env` 的加载也在 `config.py` 顶部完成（`override=False`，即**系统环境变量优先**），
+因此任何 `import config` 的脚本都自动拿到密钥，**不需要在每个入口重复 `load_dotenv()`**：
 
 ```python
-import os
-
-from dotenv import load_dotenv
 from openai import OpenAI
+import config
 
-from config import API_KEY_ENV, BASE_URL, MODEL, TEMPERATURE, MAX_TOKENS
-
-load_dotenv()   # 从当前目录向上查找 .env
-
-client = OpenAI(
-    api_key=os.environ[API_KEY_ENV],
-    base_url=BASE_URL,
-)
+client = OpenAI(api_key=config.require_api_key(), base_url=config.BASE_URL)
 
 resp = client.chat.completions.create(
-    model=MODEL,
-    temperature=TEMPERATURE,
-    max_tokens=MAX_TOKENS,
+    model=config.MODEL,
+    temperature=config.TEMPERATURE,
+    max_tokens=config.MAX_TOKENS,
     messages=[{"role": "user", "content": "你好"}],
 )
 print(resp.choices[0].message.content)
 ```
+
+> ⚠️ **本项目必须显式关闭思考模式**（`config.THINKING = {"type": "disabled"}`）。
+> 调用时要透传 `extra_body`，否则 `temperature` 静默失效、O3 采样机制不成立：
+> ```python
+> extra_body={"thinking": config.THINKING}
+> ```
+> 详见下方「模型参数说明」和 `config.py` 内注释。
 
 ### 模型参数说明（`deepseek-flash`）
 
@@ -147,7 +286,7 @@ print(resp.choices[0].message.content)
 > 2. 强制工具调用（`tool_choice="required"`）在思考模式下直接 400；
 >    要么改用 `auto`，要么先 `thinking={"type": "disabled"}` 关掉思考模式。
 
-### 提交前自查
+### 提交前自查：确认密钥未被提交
 
 ```bash
 git check-ignore -v .env    # 有输出 = 已被正确忽略
@@ -172,6 +311,9 @@ git add -An                 # 确认 .env 不在待提交列表里
 | `tqdm` | 4.70.1 | 进度条 |
 | `matplotlib` | 3.11.2 | 绘图 |
 | `python-dotenv` | 1.2.3 | 从 `.env` 读取密钥 |
+| `func_timeout` | 4.3.5 | **官方评测脚本依赖**，给 SQL 执行加超时 |
+| `psycopg2-binary` | 2.9.13 | **官方评测脚本依赖**（postgres 分支；只跑 SQLite 也需装） |
+| `pymysql` | 1.2.3 | **官方评测脚本依赖**（mysql 分支；只跑 SQLite 也需装） |
 
 ### 随附的关键间接依赖
 
