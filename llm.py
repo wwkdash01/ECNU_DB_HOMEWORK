@@ -85,6 +85,32 @@ def chat(messages, tools=None, temperature=None):
 
 _QUERY_RE = re.compile(r"(?is)\b(SELECT|WITH)\b")
 
+# 模型会把「工具调用语法」当纯文本输出（实测），需要在抽取前剥离闭合标记。
+# 原文形如： SELECT ... </｜｜DSML｜｜ parameter> </｜｜DSML｜｜ invoke> ...
+# 注意标记里可能有空格（如 "</｜｜DSML｜｜ parameter>"），故用 [^>]* 吞掉。
+_CLOSURE_OR_INVOKE = re.compile(r"</?[\uff5c|]*DSML[\uff5c|]*[^>]*>")
+
+
+def strip_tool_syntax(text):
+    """剥离模型误当文本输出的工具调用标记，尽量保留其中的 SQL。
+
+    实测形态：一次 content 里塞了多次 run_sql 的 XML 文本，多段 SQL 连在一起。
+    策略：优先取最后一个 <parameter name="sql"> 的内容；否则砍掉第一个
+    闭合标记之后的所有内容。
+    """
+    if not text:
+        return text
+    # 优先：最后一个内嵌 sql 参数里的内容
+    hits = re.findall(
+        r'<[\uff5c|]*DSML[\uff5c|]*[^>]*parameter[^>]*?name="sql"[^>]*>(.*?)'
+        r'<[\uff5c|]*DSML[\uff5c|]*[^>]*parameter',
+        text, re.S | re.I)
+    if hits:
+        return hits[-1].strip()
+    # 否则：砍掉第一个闭合标记之后的所有内容
+    m = _CLOSURE_OR_INVOKE.search(text)
+    return text[:m.start()].strip() if m else text
+
 
 def extract_sql(text):
     """从模型回复里抽 SQL；抽不到返回 None（计 EX=0，归 parse_error）。
@@ -95,6 +121,7 @@ def extract_sql(text):
     """
     if not text:
         return None
+    text = strip_tool_syntax(text)
 
     cand = None
     for pat in (r"```sql\s*(.+?)```", r"```\s*(.+?)```"):
@@ -106,7 +133,11 @@ def extract_sql(text):
         m = _QUERY_RE.search(text)
         cand = text[m.start():].strip().rstrip(";") if m else None
 
-    # 必须是一条查询；纯 DDL / 纯说明文字一律视为"没抽出 SQL"
+    # 必须是查询；纯 DDL / 纯说明文字一律视为"没抽出 SQL"
     if not cand or not _QUERY_RE.search(cand):
         return None
-    return cand
+    # 多语句时取【最后一条】以 SELECT|WITH 开头的语句：
+    # 模型在末轮可能把多段 SQL 连在一起（实测），而它最后的意图是最后那条。
+    parts = [s.strip() for s in cand.split(";")]
+    tail = next((s for s in reversed(parts) if _QUERY_RE.match(s.strip())), None)
+    return tail or cand

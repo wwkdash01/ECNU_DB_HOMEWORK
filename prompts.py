@@ -20,8 +20,11 @@ Workflow:
 3. If run_sql returns an error, read the message carefully, fix the query, and run it again.
 4. If run_sql succeeds but returns 0 rows, that may mean a wrong filter value or a
    wrong join condition. Reconsider before finishing.
-5. You have at most {max_steps} attempts. When you are done, output the final SQL
-   in a ```sql fenced block.
+5. When your query is validated, call submit_answer with that SQL to finish.
+   submit_answer is the ONLY way to finish — do not just write the SQL in your reply.
+6. You have at most {max_steps} attempts. On the FINAL attempt only submit_answer is
+   available: either submit your best validated query, or if you have none,
+   submit your best attempt so far. Never finish without submitting.
 """
 
 ONESHOT = """You are a SQLite expert. Write a single SQL query that answers the question.

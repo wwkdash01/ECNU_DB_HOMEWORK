@@ -48,6 +48,19 @@ TOOLS = [
             "required": ["table", "column"]}}},
 ]
 
+# 终止动作：模型用它提交最终答案并结束循环。
+# 刻意【不放进 TOOLS】—— tools_for() 用 TOOLS[0:n] 切片，放进去会破坏 A1⊂A2⊂A3 与
+# 各组的工具计数。它按组统一附加，不属于任何一组的"能力差异"。
+SUBMIT_TOOL = {"type": "function", "function": {
+    "name": "submit_answer",
+    "description": "提交最终答案并结束任务。当你确认 SQL 已经正确回答了用户问题时调用它。"
+                   "参数必须是那条完整的、可直接执行的 SQL 查询。"
+                   "调用后任务立即结束，所以不要在还没确定答案时调用。",
+    "parameters": {"type": "object",
+        "properties": {"sql": {"type": "string",
+                               "description": "最终答案 SQL（完整的单条查询）"}},
+        "required": ["sql"]}}}
+
 
 def _cut(s):
     """按字符上限截断（_col_values 另有按条目的安全截断）"""
@@ -105,6 +118,25 @@ def _col_desc(conn, db_id, table, column):
     return _cut(f"{table}.{column} 说明：{d}\n取值说明：{v}"), None
 
 
+def _submit(conn, db_id, sql):
+    """提交最终答案：只有在库上真的能执行才接受。
+
+    失败时返回提示并让循环继续——模型可以读错误、改完再提交。
+    这样"最终答案"必定是可执行 SQL，从根上消灭"畸形/散文当答案"的情形。
+    """
+    sql = (sql or "").strip().rstrip(";")
+    if not sql:
+        return "提交失败：sql 参数为空，请给出完整的单条查询", None
+    from llm import _QUERY_RE
+    if not _QUERY_RE.match(sql):
+        return f"提交失败：不是一条查询语句。请提交 SELECT/WITH 查询。收到：{sql[:120]}", None
+    try:
+        execute(conn, sql)
+    except Exception as e:
+        return f"提交失败：该 SQL 无法执行（{e}）。请修正后重新提交。", None
+    return f"已收到最终答案：{_cut(sql)}", None
+
+
 def dispatch(conn, db_id, name, args):
     """返回 (文本, qet)。未知工具名返回友好错误，而不是抛异常打断 agent 循环。"""
     if name == "run_sql":
@@ -113,9 +145,16 @@ def dispatch(conn, db_id, name, args):
         return _col_values(conn, db_id, args.get("table", ""), args.get("column", ""))
     if name == "get_column_desc":
         return _col_desc(conn, db_id, args.get("table", ""), args.get("column", ""))
+    if name == "submit_answer":
+        return _submit(conn, db_id, args.get("sql", ""))
     return f"未知工具：{name}", None
 
 
 def tools_for(group):
-    """按组裁剪工具。必须按顺序切片，保证 A1 ⊂ A2 ⊂ A3，差值才有意义。"""
-    return {"A1": TOOLS[0:1], "A2": TOOLS[0:2], "A3": TOOLS[0:3]}.get(group)
+    """按组裁剪工具。必须按顺序切片，保证 A1 ⊂ A2 ⊂ A3，差值才有意义。
+
+    submit_answer 作为 agent 的【终止动作】统一附加在所有 A 组上（O 组不走这条路）。
+    它不是"能力差异"，故不参与 A1/A2/A3 的切片计数。
+    """
+    base = {"A1": TOOLS[0:1], "A2": TOOLS[0:2], "A3": TOOLS[0:3]}.get(group)
+    return None if base is None else base + [SUBMIT_TOOL]

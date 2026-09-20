@@ -35,6 +35,7 @@ DB_DIR         = DATA_DIR / "dev_databases"
 QUESTIONS_FILE = DATA_DIR / "mini_dev_sqlite.json"
 GOLD_FILE      = DATA_DIR / "mini_dev_sqlite_gold.sql"  
 RESULTS_DIR    = ROOT / "results"
+EVAL_DIR       = ROOT / "reference" / "evaluation"      # 官方评测脚本（score.py 用）
 
 # ---------- 模型 ----------
 API_KEY_ENV = "DEEPSEEK_API_KEY"
@@ -67,7 +68,11 @@ def require_api_key():
     return k
 
 # ---------- 实验参数（冻结，别中途改）----------
-MAX_STEPS     = 3    # agent 轮数【上限】，成功即停，不是固定跑 3 轮
+# ⚠️ 本仓库实测：手册的 3 轮对本模型不够 —— submit_answer 启用后 11/11 次提交
+#    全部发生在第 3 轮，且 9/20 从未提交（累计 run_sql 达 3~8 次）。
+#    故 3 -> 10：它现在role是"安全护栏"而非"实验变量"，因为模型提交答案即停。
+#    cost trade-off 改由 EX@k 曲线离线分析（见 README / 报告）。
+MAX_STEPS     = 10
 K_CANDIDATES  = 3    # O3 采样数，与 MAX_STEPS 对齐
 SMOKE_N       = 20   # 冒烟测试题数（取前 N 条，固定，不要随机）
 
@@ -81,3 +86,11 @@ VALUE_SAMPLE_LIMIT    = 20     # get_column_values 取样条数
 API_MAX_RETRIES  = 3
 API_BACKOFF_BASE = 2           # 秒
 CONCURRENCY      = 5           # 阶段 3 实测吞吐后再定
+
+# ---------- agent 末轮兜底 ----------
+# 实测：模型即使末轮被禁用工具，仍会把「工具调用语法」当纯文本输出，例如
+#   SELECT ... GROUP BY c.Segment</*DSML*/ parameter></*DSML*/ invoke>
+#   <*DSML*/ invoke name="run_sql"><*DSML*/ parameter name="sql" string="true">SELECT ...
+# 即它把两次 run_sql 调用连文本一起吐出来，多段 SQL 连成一条 -> 语法错。
+# 这些 SQL 当场执行过且成功，因此末轮答案执行失败时回退到「最后一条真的执行成功过的 SQL」。
+FALLBACK_TO_LAST_EXECUTED = True

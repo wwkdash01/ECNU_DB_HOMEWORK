@@ -276,13 +276,17 @@ def check_tools():
     out, _ = dispatch(conn, db_id, "no_such_tool", {})
     check("4g 未知工具名返回友好文本", out.startswith("未知工具"), f"{out!r}")
 
-    # --- 4h tools_for：A1 ⊂ A2 ⊂ A3 ---
+    # --- 4h tools_for：A1 ⊂ A2 ⊂ A3（submit_answer 是各 A 组共有的终止动作，不计入差异）---
     def names(g):
-        return {t["function"]["name"] for t in tools_for(g)}
+        return {t["function"]["name"] for t in tools_for(g)} - {"submit_answer"}
     n1, n2, n3 = names("A1"), names("A2"), names("A3")
     check("4h 工具按组递增且严格包含 A1⊂A2⊂A3",
           n1 < n2 < n3 and len(n1) == 1 and len(n3) == 3,
           f"A1={sorted(n1)}\n       A2={sorted(n2)}\n       A3={sorted(n3)}")
+    check("4h submit_answer 为各 A 组共有的终止动作",
+          all("submit_answer" in {t["function"]["name"] for t in tools_for(g)}
+              for g in ("A1", "A2", "A3")),
+          f"A1={[t['function']['name'] for t in tools_for('A1')]}")
     check("4h tools_for 对 O 组返回 None", tools_for("O1") is None)
 
     # --- 4i 值列表按条目截断，不把值切成半截 ---

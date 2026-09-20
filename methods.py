@@ -25,7 +25,8 @@ from db import execute, QueryTimeout
 
 
 def _blank():
-    return {"final_sql": None, "turns": [], "candidates": [], "first_exec_ok": None}
+    return {"final_sql": None, "turns": [], "candidates": [], "first_exec_ok": None,
+            "final_sql_source": None, "submitted": False, "submit_attempts": 0}
 
 
 # ---------------------------------------------------------------- O1
@@ -100,47 +101,113 @@ def run_selfconsistency(context, question, db_id, temperature):
 
 
 # ---------------------------------------------------------------- A1 / A2 / A3
-def run_agent(context, question, db_id, temperature, tools):
-    """agent 循环。MAX_STEPS 是【上限而非固定轮数】：模型不再请求工具即停。
 
-    "成功即停"是 EX@k 曲线成立的前提（若固定跑满 3 轮，逐轮累计正确率无从谈起）。
+def _rejected(r, db_id):
+    """末轮答案是否应被否决：在真实库上执行失败（语法错/表不存在/超时）。
+
+    只用于【末轮（禁工具）】产生的答案；成败本身不泄漏给 agent。
+    """
+    if not config.FALLBACK_TO_LAST_EXECUTED:
+        return False
+    sql = r.get("final_sql")
+    if not sql:
+        return False
+    try:
+        conn = get_conn(db_id)
+        try:
+            execute(conn, sql)
+            return False
+        finally:
+            conn.close()
+    except Exception:
+        return True
+
+
+def run_agent(context, question, db_id, temperature, tools):
+    """agent 循环。MAX_STEPS 是【上限而非固定轮数】：模型提交答案或不再请求工具即停。
+
+    ★ 终止动作 submit_answer（本仓库修正，实测必需）：
+      实测该模型在 3 轮里【不会】主动停止请求工具（20/20 打满上限）；而工具被禁用后，
+      它会把「工具调用语法」当纯文本吐出来，导致 45% 的 final_sql 无法执行。
+      根因是缺一个可靠的"交答案"动作——它擅长调工具，不擅长"最后一句写对"。
+      submit_answer 让提交变成工具调用，且提交物必须能在库上执行。
+
+    ★ 末轮只留 submit_answer：探索类工具撤走，模型只能提交或作答。
+    ★ 兜底：若最终仍无可用 SQL，退回"最后一条真的执行成功过的 SQL"，
+      并标记 final_sql_source 供报告披露，避免把采集失败静默归因成模型能力。
     """
     r = _blank()
     conn = get_conn(db_id)
     messages = [{"role": "system", "content": agent_system(context)},
                 {"role": "user", "content": question}]
+    last_ok_sql = None
+    submit_tool = [t for t in (tools or []) if t["function"]["name"] == "submit_answer"]
 
-    for step in range(config.MAX_STEPS):
-        msg, meta = chat(messages, tools=tools, temperature=temperature)
-        sql = extract_sql(msg.content)
-        turn = {"turn": step, "sql": sql, "tool_calls": [], "tool_results": [],
-                "qet": None, "called_tools": False, **meta}
+    try:
+        for step in range(config.MAX_STEPS):
+            # 末轮：撤走探索类工具，只保留 submit_answer
+            is_last = (step == config.MAX_STEPS - 1)
+            offered = submit_tool if is_last else tools
+            msg, meta = chat(messages, tools=offered, temperature=temperature)
+            sql = extract_sql(msg.content)
+            turn = {"turn": step, "sql": sql, "tool_calls": [], "tool_results": [],
+                    "qet": None, "called_tools": False,
+                    "tools_offered": [t["function"]["name"] for t in (offered or [])],
+                    **meta}
+            submitted = False
 
-        if not msg.tool_calls:                  # 不再请求工具 = 要交答案了 -> 成功即停
+            if not msg.tool_calls:              # 不再请求工具 = 用文本作答
+                r["turns"].append(turn)
+                r["final_sql"] = sql
+                if sql:
+                    r["final_sql_source"] = "model"
+                break
+
+            turn["called_tools"] = True
+            messages.append(msg)                # 助手消息（含 tool_calls）进历史
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                out, qet = dispatch(conn, db_id, tc.function.name, args)
+                turn["tool_calls"].append({"name": tc.function.name, "args": args})
+                turn["tool_results"].append(out)
+
+                if tc.function.name == "run_sql":
+                    if r["first_exec_ok"] is None:   # 只记【首次】run_sql
+                        r["first_exec_ok"] = not out.startswith("执行失败")
+                    turn["qet"] = qet
+                    if out.startswith("执行成功"):
+                        cand = (args.get("sql") or "").strip().rstrip(";")
+                        if cand:
+                            last_ok_sql = cand   # 兜底用：真的执行成功过的 SQL
+                elif tc.function.name == "submit_answer":
+                    r["submit_attempts"] += 1
+                    if out.startswith("已收到最终答案"):
+                        cand = (args.get("sql") or "").strip().rstrip(";")
+                        r["submitted"] = True
+                        r["final_sql"] = cand
+                        r["final_sql_source"] = "submitted"
+                        submitted = True
+                    # 提交失败不终止：错误文本已进 messages，模型可修正后重提交
+
+                # ★ 这一行就是"回灌"：工具结果（含报错原文）进入下一轮的上下文
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+
             r["turns"].append(turn)
-            r["final_sql"] = sql
-            break
+            if submitted:
+                break                           # 已提交，任务结束
+            r["final_sql"] = sql                # 否则留本轮文本 SQL 作为候选
 
-        turn["called_tools"] = True
-        messages.append(msg)                    # 助手消息（含 tool_calls）进历史
-        for tc in msg.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            out, qet = dispatch(conn, db_id, tc.function.name, args)
-            turn["tool_calls"].append({"name": tc.function.name, "args": args})
-            turn["tool_results"].append(out)
-            if tc.function.name == "run_sql":
-                if r["first_exec_ok"] is None:  # 只记【首次】run_sql，供自纠成功率分析
-                    r["first_exec_ok"] = not out.startswith("执行失败")
-                turn["qet"] = qet
-            # ★ 这一行就是"回灌"：工具结果（含报错原文）进入下一轮的上下文
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
-
-        r["turns"].append(turn)
-        r["final_sql"] = sql                    # 用尽轮数时留最后一轮（手册 §1.6）
+        # 兜底：最终仍无可用 SQL 时，退回最后一条真的执行成功过的 SQL
+        if last_ok_sql and (not r["final_sql"] or _rejected(r, db_id)):
+            if r["final_sql"]:
+                r["model_answer_rejected"] = True
+            r["final_sql"] = last_ok_sql
+            r["final_sql_source"] = "last_executed"
+    finally:
+        conn.close()
 
     r["messages_final"] = messages              # 供人工核对"报错确实被回灌"
-    conn.close()
     return r
