@@ -42,7 +42,16 @@ BASE_URL    = "https://api.deepseek.com"
 MODEL       = "deepseek-flash"   # 当前唯一 Flash API ID（V4.1-Flash）。旧名 deepseek-v4-flash 已退役
 MODEL_VERSION = "DeepSeek-V4.1-Flash"   # 写进 env.json 供报告版本溯源
 TEMPERATURE = 0.0
-MAX_TOKENS  = 393216   
+
+# O3 专用。T=0 时同一 prompt 采样三次会得到三条相同 SQL，投票无意义、
+# O3 退化成 O1 —— 这是 O3 机制的内在要求，报告里必须写明。
+TEMPERATURE_SAMPLING = 0.7
+# 输出上限。模型实际每条 SQL 仅几十~几百 token；设成模型上限（393216）无意义，
+# 且一旦模型跑飞会按输出价烧钱。2048 足够容纳 SQL + 少量说明文字。
+MAX_TOKENS  = 2048
+
+# 单次 API 请求的网络超时（秒），防止请求悬挂拖死整批
+REQUEST_TIMEOUT = 120
 
 # ---------- 关闭思考模式 ----------
 THINKING = {"type": "disabled"}
