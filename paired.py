@@ -24,12 +24,21 @@ RESULTS = Path(__file__).resolve().parent / "results"
 
 
 def load(name):
-    """读 _scored.jsonl -> {qidx: (is_correct, difficulty)}"""
-    p = RESULTS / name
-    if not p.exists() and Path(name).exists():
-        p = Path(name)
+    """读 _scored.jsonl -> {qidx: (is_correct, difficulty)}
+
+    ★ 解析顺序：【先 cwd，再 RESULTS】。反过来（RESULTS 优先）会让 `results/` 下的
+      同名文件【静默遮蔽】cwd 里的文件：在 `results/repro3/` 里跑
+      `paired.py O1_scored.jsonl A1_scored.jsonl` 会读到上一级归档那一批，
+      数字看着完全正常，却根本不是本批次的数据。
+
+    改序不改变任何现有用法：从仓库根目录跑裸文件名时，根目录下没有该文件，
+    仍然回落到 RESULTS。
+    """
+    p = Path(name)
     if not p.exists():
-        raise SystemExit(f"找不到 {name}（既不在 {RESULTS} 也不在 cwd）")
+        p = RESULTS / name
+    if not p.exists():
+        raise SystemExit(f"找不到 {name}（既不在 cwd 也不在 {RESULTS}）")
     d = {}
     for line in p.read_text(encoding="utf-8").splitlines():
         if not line.strip():
