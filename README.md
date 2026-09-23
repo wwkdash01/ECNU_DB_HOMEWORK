@@ -275,16 +275,20 @@ print(resp.choices[0].message.content)
 | 参数 | 说明 |
 | --- | --- |
 | 上下文长度 | 1M |
-| 最大输出 | **384K（393216）**；不设时默认 8K（非思考）/ 64K（思考） |
+| 最大输出 | **393216**（API 实测上限）；不设时默认 8K（非思考）/ 64K（思考） |
 | 思考模式 | **默认开启**（`thinking.type = "enabled"`），`reasoning_effort` 默认 `high` |
 | `temperature` | 取值 ≤ 2。**思考模式下不生效**，此时由 `top_p` 控制（有效区间 0.95–1.0） |
 | `tool_choice` | 思考模式下**不支持 `required` 及指定具体工具**，会返回 400 |
 
-> ⚠️ 两个容易踩的坑：
+> ⚠️ 三个容易踩的坑：
 > 1. `MAX_TOKENS` 若小于思考所需，`reasoning_content` 会吃光额度导致正文截断，
->    `finish_reason` 返回 `length`。
+>    `finish_reason` 返回 `length`。本项目 A9 组因此单独放开到
+>    `MAX_TOKENS_A9 = 393216`（**老组一律不动，仍是 2048**）。
 > 2. 强制工具调用（`tool_choice="required"`）在思考模式下直接 400；
 >    要么改用 `auto`，要么先 `thinking={"type": "disabled"}` 关掉思考模式。
+> 3. **官方价格页把 MAX OUTPUT 写成 "384K"，与 API 实际接受的 393216 不一致。**
+>    以 API 报错信息为准（发 400000 会返回
+>    `the valid range of max_tokens is [1, 393216]`），别照抄价格页。
 
 ### 提交前自查：确认密钥未被提交
 
@@ -317,25 +321,40 @@ conda activate db_agent
 ~/.conda/envs/db_agent/bin/python gate0_check.py     # 期望 Gate 0 通过
 ```
 
-### 跑五组
+### 跑各组
+
+**跑哪几组取决于你要复现什么**——本项目最终只用两组得出结论，其余 9 组是
+**已归档的负面结果**（完整图谱见 [`实验结论.md` §3.0](实验结论.md)）：
+
+| 你要复现的目标 | 跑这几组 | 命令 |
+| --- | --- | --- |
+| **主结果**（唯一显著的对比） | `O1` `A1` | `run.py --group O1` / `--group A1` |
+| 负面结果存档 | `A2` `A4`~`A10` | 各自的 `run.py --group <G>` |
+| 未执行（不要声称跑过） | `A3` | `results/A3.jsonl` 是空文件 |
 
 每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）：
 
 ```bash
-for G in O1 O3 A1 A2 A3; do
-  ~/.conda/envs/db_agent/bin/python run.py --group $G
-done
+# 主结果：两组都跑，然后配对比较
+for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 ```
 
-| 组 | 方法 | 温度 | 工具 |
-| --- | --- | --- | --- |
-| `O1` | one-shot ×1 | 0.0 | — |
-| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — |
-| `A1` | agent 循环 | 0.0 | `run_sql` |
-| `A2` | agent 循环 | 0.0 | + `get_column_values` |
-| `A3` | agent 循环 | 0.0 | + `get_column_desc` |
+| 组 | 方法 | 温度 | 工具 | 结论 |
+| --- | --- | --- | --- | --- |
+| `O1` | one-shot ×1 | 0.0 | — | 基准 58.40% |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 未跑全量 |
+| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%，p=0.0059 ✅** |
+| `A2` | agent 循环 | 0.0 | + `check_result` | 0（同义反复） |
+| `A3` | agent 循环 | 0.0 | + `get_column_desc` | **从未执行** |
+| `A4` | agent 循环 | 0.0 | + `explore_schema` | ≈0 |
+| `A5` | agent 循环 | 0.0 | + `declare_shape` | 0（工具被忽略 49/49） |
+| `A6` | agent 循环 | 0.0 | 同 A1 | −3.0pt（查询计划 CoT） |
+| `A7` | agent 循环 | 0.0 | 同 A1 | −4.0pt（分治 CoT） |
+| `A8` | agent 循环 | 0.0 | + `check_values` | 0 |
+| `A9` | agent 循环（**原生思考模式**） | 被平台忽略 | 同 A1 | −0.20pt（n=494, p=1.00） |
+| `A10` | agent 循环（**承诺硬门 + 语义对质**） | 0.0 | + `declare_intent` | −0.20pt（n=494, p=1.00） |
 
-冒烟（固定取前 N 条，不花钱在评测上）：
+冒烟（固定取前 N 条）：
 
 ```bash
 ~/.conda/envs/db_agent/bin/python run.py --group A1 --limit 20 --out A1_smoke.jsonl
@@ -344,12 +363,37 @@ done
 > **`--out` 很重要**：不加它，`--limit 20` 会去读 `<group>.jsonl` 的断点记录；
 > 若该文件已是全量 500 条，前 20 题会被判定"已完成"从而**一题不跑**。
 
+### 配对比较（**不看这一步就会得出错误结论**）
+
+**T=0 也不可复现**：同配置重跑，SQL 仅约 30% 相同，30 题里约 2 题 EX 翻盘。
+所以**绝不能拿历史数字当对照**，必须同期重跑 + 配对检验：
+
+```bash
+P=~/.conda/envs/db_agent/bin/python
+for G in O1 A1; do $P score.py --group $G; done
+$P paired.py O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
+```
+
+### 抽样脚本（两种用途，混用会产生假信号）
+
+| 脚本 | 抽样方式 | 能回答什么 |
+| --- | --- | --- |
+| `make_samples.py` | 按**难度**分层，比例与全量一致 | **能估效果**；生成全部清单到 `data/` |
+| `make_pilot_targeted.py` | 按**失败类型**定向 | **只能定位机制** |
+| `_measure_B.py` / `_measure_intent.py` | 不抽样，离线量覆盖率/误杀率/自伤 | 上线前的守门，**0 API 成本** |
+
+题目子集清单落在 `data/*_qidx.json`（**不是** `results/`——后者被 gitignore）。
+`python make_samples.py --check` 会校验生成逻辑与归档清单**逐题一致**，
+确保 fresh clone 后"跑了哪些题"可精确复现。
+
+> ⚠️ 用定向样本估效果会得到假提升。本项目已实测三次：
+> A4 定向样本 +37pt、A6/A7 的 30 题 +6.67pt、A10 的 102 困难题 +2.94pt，
+> **换成代表性样本后全部归零或反向**。详见 [`实验结论.md` §10](实验结论.md)。
+
 ### 判分
 
 ```bash
-for G in O1 O3 A1 A2 A3; do
-  ~/.conda/envs/db_agent/bin/python score.py --group $G
-done
+for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 ```
 
 产出 `results/<group>_scored.jsonl`，含 EX、列级召回、幻觉率、逐轮 EX@k。
@@ -358,7 +402,7 @@ done
 
 ```bash
 ~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点（23 项）
-~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（45 项，不发 API）
+~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（74 项，不发 API）
 ~/.conda/envs/db_agent/bin/python gate2_check.py              # 另跑 1 题 A1 做端到端校验
 ```
 
@@ -367,10 +411,12 @@ done
 | 项 | 值 |
 | --- | --- |
 | 样本 | 500 题 / 11 库 / 79 表 |
-| 总调用 | 约 6,200 次 |
-| 总耗时 | 约 15 分钟（并发 5） |
-| 总成本 | 约 **$1.0（¥7）** |
-| 限流 | 0 次 429 |
+| 单组全量耗时 | **约 2 分钟**（并发 20） |
+| 单组全量成本 | A1 ¥5.3 / A10 ¥6.9（低谷价）；O1 约 ¥0.4 |
+| 并发提示 | `--concurrency 20` 是安全值；模型侧限流 2500 并发 |
+
+> 历史记录里「约 15 分钟（并发 5）」是早期用默认并发 5 跑出来的。
+> 并发提到 20 后单组全量约 2 分钟——**时间瓶颈一直是并发，不是模型延迟**。
 
 ### 复现时最容易踩的坑
 
