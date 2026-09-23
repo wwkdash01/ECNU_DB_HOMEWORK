@@ -47,9 +47,25 @@ TEMPERATURE = 0.0
 # O3 专用。T=0 时同一 prompt 采样三次会得到三条相同 SQL，投票无意义、
 # O3 退化成 O1 —— 这是 O3 机制的内在要求，报告里必须写明。
 TEMPERATURE_SAMPLING = 0.7
-# 输出上限。模型实际每条 SQL 仅几十~几百 token；设成模型上限（393216）无意义，
+# 输出上限。模型实际每条 SQL 仅几十~几百 token；设成模型上限无意义，
 # 且一旦模型跑飞会按输出价烧钱。2048 足够容纳 SQL + 少量说明文字。
 MAX_TOKENS  = 2048
+
+# ---------- A9 专用：原生思考模式 ----------
+# A9 = A1 的【逐字同一 prompt、逐字同一工具】，唯一自变量是 thinking 开关。
+# 老组（O1/O3/A1~A8）一律不受影响：MAX_TOKENS 仍是 2048、temperature 仍生效，
+# 因此历史结果与今后的对照重跑口径完全一致。
+THINKING_A9        = {"type": "enabled"}
+REASONING_EFFORT   = "max"      # 官方映射：max -> max（最高档）。low/high/max 三档
+
+# 思考模式下【推理 token 与正式输出共享 max_tokens】，而推理长度不可预知。
+# 若沿用 2048，模型常在写完 SQL 前被截断（finish_reason='length'），
+# 表现为"tool_call 参数为空"——会被误读成"模型不会用工具"。故 A9 放开到模型上限。
+# 393216 是实测上限：发 400000 时 API 报
+#   "the valid range of max_tokens is [1, 393216]"
+# （注意：官方价格页把 MAX OUTPUT 写成 "384K"，与 API 实际接受的 393216 不一致；
+#  以 API 报错信息为准，别照抄价格页。）
+MAX_TOKENS_A9      = 393216
 
 # 单次 API 请求的网络超时（秒），防止请求悬挂拖死整批
 REQUEST_TIMEOUT = 120

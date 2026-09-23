@@ -282,14 +282,137 @@ def check_tools():
     def names(g):
         return {t["function"]["name"] for t in tools_for(g)} - {"submit_answer"}
     n1, n2, n3 = names("A1"), names("A2"), names("A3")
-    check("4h 工具按组递增且严格包含 A1⊂A2⊂A3",
-          n1 < n2 < n3 and len(n1) == 1 and len(n3) == 3,
-          f"A1={sorted(n1)}\n       A2={sorted(n2)}\n       A3={sorted(n3)}")
+    # ★ 设计变更（原 A2/A3 方案弃用）：A2 现在是 A1 + check_result（行数自检）。
+    #   A2−A1 的单一自变量从"值域获取"改为"结果形态自检"；A3 保留旧定义但不再跑。
+    check("4h A1 ⊂ A2（A2 只在 A1 之上加一个工具）",
+          n1 < n2 and len(n1) == 1 and (n2 - n1) == {"check_result"},
+          f"A1={sorted(n1)}\n       A2={sorted(n2)}\n       A2−A1={sorted(n2 - n1)}")
+    check("4h A3 保留旧定义（get_column_values/get_column_desc，已弃用不再跑）",
+          n1 < n3 and len(n3) == 3,
+          f"A3={sorted(n3)}")
     check("4h submit_answer 为各 A 组共有的终止动作",
           all("submit_answer" in {t["function"]["name"] for t in tools_for(g)}
               for g in ("A1", "A2", "A3")),
           f"A1={[t['function']['name'] for t in tools_for('A1')]}")
     check("4h tools_for 对 O 组返回 None", tools_for("O1") is None)
+
+    # --- 4h1 A1 基线冻结守卫（A1 已定稿 63.4%，任何改动都会毁掉可比性）---
+    from prompts import agent_system
+    a1p = agent_system("CTX", "A1")
+    check("4h1 A1 prompt 不含任何新工具字样（基线冻结）",
+          "check_result" not in a1p and "explore_schema" not in a1p
+          and "get_column_values" not in a1p,
+          f"含 check_result={'check_result' in a1p}")
+    check("4h1 A2 prompt = A1 步骤 1~5 逐字相同 + 第 6 步替换（构造可证）",
+          agent_system("CTX", "A3") == a1p
+          and "check_result" in agent_system("CTX", "A2")
+          and agent_system("CTX", "A2").index("6. BEFORE") > 0,
+          "A2 与 A1 的前缀必须一致")
+    check("4h1 A2 prompt 第 6 步之前与 A1 完全一致",
+          agent_system("CTX", "A2")[:agent_system("CTX", "A2").index("6. BEFORE")]
+          == a1p[:a1p.index("6. When")],
+          "派生模板的前缀必须逐字相同")
+
+    # --- 4h4 A9：原生思考模式。唯一自变量 = thinking 开关，prompt/工具必须逐字同一 ---
+    #   与 A6/A7 的差别必须可证：A6/A7 换 prompt，A9 换解码路径。
+    #   若 A9 的 prompt 或工具与 A1 有任何差异，A9−A1 就不再是"思考模式"的单因子对照。
+    from methods import _chat_profile
+    check("4h4 A9 prompt 与 A1 逐字相同",
+          agent_system("CTX", "A9") == a1p,
+          f"相同={agent_system('CTX', 'A9') == a1p}")
+    check("4h4 A9 工具与 A1 完全相同（含顺序）",
+          [t["function"]["name"] for t in tools_for("A9")]
+          == [t["function"]["name"] for t in tools_for("A1")],
+          f"A9={[t['function']['name'] for t in tools_for('A9')]}"
+          f"  A1={[t['function']['name'] for t in tools_for('A1')]}")
+    _p9 = _chat_profile("A9", config.TEMPERATURE)
+    check("4h4 A9 打开思考模式且放开 max_tokens（推理与输出共享上限）",
+          _p9["thinking"] == {"type": "enabled"}
+          and _p9["max_tokens"] == config.MAX_TOKENS_A9 == 393216,
+          f"thinking={_p9['thinking']} max_tokens={_p9['max_tokens']}"
+          f"（393216 是 API 实测上限，见 config 注释）")
+    # 老组必须完全不受影响：否则 A1v2 63.4% 的可比性当场作废
+    _p1 = _chat_profile("A1", config.TEMPERATURE)
+    check("4h4 老组不受影响：A9 以外的组仍用 2048 且不传 thinking",
+          all(_chat_profile(g, config.TEMPERATURE)
+              == {"temperature": config.TEMPERATURE, "thinking": None,
+                  "reasoning_effort": None, "max_tokens": None}
+              for g in ("A1", "A2", "A4", "A5", "A6", "A7", "A8")),
+          f"A1 profile={_chat_profile('A1', config.TEMPERATURE)}")
+    check("4h4 老组 MAX_TOKENS 未被改动（仍是 2048，历史口径不变）",
+          config.MAX_TOKENS == 2048 and _p1["max_tokens"] is None,
+          f"MAX_TOKENS={config.MAX_TOKENS}")
+    # 思考模式下 temperature 无效，必须不传，避免报告出现"设了 T=0"的假陈述
+    check("4h4 A9 不传 temperature（思考模式下该参数被平台忽略）",
+          _p9["temperature"] is None and _p9["reasoning_effort"] == config.REASONING_EFFORT,
+          f"temperature={_p9['temperature']} effort={_p9['reasoning_effort']}")
+
+    # --- 4h5 A10（方向一）：承诺硬门。单一自变量 = 执行前的解释承诺 ---
+    _a10 = agent_system("CTX", "A10")
+    check("4h5 A10 第 1 步与 A1 逐字相同（可构造证明）",
+          _a10[:_a10.index("2. BEFORE running any SQL")]
+          == a1p[:a1p.index("2. If anything is unclear")],
+          "派生模板的前缀必须逐字相同")
+    check("4h5 A10 第 3~7 步与 A1 逐字相同（只替换了第 2 步）",
+          _a10[_a10.index("3. Validate your query"):] == a1p[a1p.index("3. Validate your query"):],
+          "后缀必须逐字相同")
+    check("4h5 A10 提到了 declare_intent，A1 没有",
+          "declare_intent" in _a10 and "declare_intent" not in a1p)
+    _n10 = {t["function"]["name"] for t in tools_for("A10")} - {"submit_answer"}
+    check("4h5 A10 = A1 + declare_intent（唯一工具差异）",
+          _n10 == {"run_sql", "declare_intent"},
+          f"A10={sorted(_n10)}  A1={sorted(n1)}")
+    check("4h5 A10 仍带 submit_answer 终止动作",
+          "submit_answer" in {t["function"]["name"] for t in tools_for("A10")})
+    # 硬门行为：没承诺就必须拒绝执行（这是 A10 与 A5 的分水岭）
+    _gate_state = {}
+    _rej, _ = dispatch(conn, db_id, "run_sql", {"sql": "SELECT 1"}, _gate_state)
+    check("4h5 硬门：未 declare_intent 时 run_sql 被拒绝",
+          _rej.startswith("拒绝执行") and "declare_intent" in _rej,
+          f"返回={_rej[:60]!r}")
+    _ack, _ = dispatch(conn, db_id, "declare_intent",
+                       {"entities": "x", "row_grain": "aggregate"}, _gate_state)
+    check("4h5 declare_intent 复述承诺并放行",
+          "已记录" in _ack and _gate_state.get("intent", {}).get("row_grain") == "aggregate",
+          f"返回={_ack[:60]!r}")
+    _ok, _ = dispatch(conn, db_id, "run_sql", {"sql": "SELECT 1"}, _gate_state)
+    check("4h5 承诺之后 run_sql 正常执行",
+          _ok.startswith("执行成功"), f"返回={_ok[:60]!r}")
+    check("4h5 declare_intent 缺必填项时拒绝（不会静默通过）",
+          dispatch(conn, db_id, "declare_intent", {"entities": "", "row_grain": ""},
+                   {})[0].startswith("拒绝"))
+
+    # --- 4h2 A4：explore_schema 是"替代方案"，必须单独验，且不得破坏 A1⊂A2⊂A3 ---
+    n4 = names("A4")
+    check("4h2 A4 = run_sql + explore_schema（替代而非递进，故意不在包含链上）",
+          n4 == {"run_sql", "explore_schema"},
+          f"A4={sorted(n4)}  （A1={sorted(n1)}）")
+    check("4h2 A4 仍带 submit_answer 终止动作",
+          "submit_answer" in {t["function"]["name"] for t in tools_for("A4")})
+
+    # --- 4h3 explore_schema 的实际行为（A4 的可行性前提）---
+    #   A1v2 剩余错误里「表选错」占 37.6%，其中漏表 40 条。工具必须能
+    #   在【不给表名】的情况下，仅凭问题词元把被漏掉的那张表找出来。
+    ex_out, ex_qet = dispatch(conn, db_id, "explore_schema",
+                              {"keywords": ["transaction", "customer"], "tables": []})
+    check("4h3 explore_schema 仅凭 keywords 即可返回表清单",
+          "MATCHED TABLES" in ex_out and len(ex_out) > 200,
+          f"长度={len(ex_out)}  前 80 字={ex_out[:80]!r}")
+    check("4h3 explore_schema 返回行数规模（区分事实表/维度表）",
+          "rows" not in ex_out and "[1,000]" in ex_out or "[1,000]" in ex_out
+          or any(f"[{v:,}]" in ex_out for v in (1000,)),
+          f"含 [1,000]={'[1,000]' in ex_out}")
+    check("4h3 explore_schema 输出不超工具输出上限（否则桥接段会被切掉）",
+          len(ex_out) <= config.TOOL_OUTPUT_MAX_CHARS,
+          f"长度={len(ex_out)} 上限={config.TOOL_OUTPUT_MAX_CHARS}")
+    check("4h3 explore_schema 空参数不抛异常（只给全库表清单）",
+          isinstance(dispatch(conn, db_id, "explore_schema", {})[0], str))
+    check("4h3 explore_schema 不存在的表名不抛异常",
+          isinstance(dispatch(conn, db_id, "explore_schema",
+                              {"tables": ["NoSuchTable"]})[0], str))
+    check("4h3 explore_schema 支持字符串形式的 keywords（模型有时不传数组）",
+          isinstance(dispatch(conn, db_id, "explore_schema",
+                              {"keywords": "customer"})[0], str))
 
     # --- 4i 值列表按条目截断，不把值切成半截 ---
     long_vals = ["v" * 300 for _ in range(20)]
@@ -301,13 +424,20 @@ def check_tools():
     conn.close()
 
     section("4j TOOLS 声明合法性")
-    for t in TOOLS:
+    from tools import EXPLORE_TOOL
+    for t in TOOLS + [EXPLORE_TOOL]:
         fn = t["function"]
         ok = (t.get("type") == "function" and "name" in fn and "description" in fn
               and fn["parameters"].get("type") == "object"
               and len(fn["description"]) > 30)
         check(f"4j TOOLS 声明完整: {fn['name']}", ok,
               f"description {len(fn['description'])} 字，参数 {list(fn['parameters']['properties'])}")
+    ex = EXPLORE_TOOL["function"]
+    check("4j explore_schema 参数为数组型（keywords/tables），且无必填项",
+          ex["parameters"]["properties"]["keywords"]["type"] == "array"
+          and ex["parameters"]["properties"]["tables"]["type"] == "array"
+          and not ex["parameters"].get("required"),
+          f"required={ex['parameters'].get('required')}")
 
 
 # ======================================================================

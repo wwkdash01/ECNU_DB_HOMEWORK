@@ -29,6 +29,20 @@ def _blank():
             "final_sql_source": None, "submitted": False, "submit_attempts": 0}
 
 
+# ---------------------------------------------------------------- A9 思考模式
+# A9 = A1 的逐字同一 prompt + 逐字同一工具，【唯一自变量】是原生思考开关。
+# 老组（O1/O3/A1~A8）在 _chat_profile 里取默认值，故行为与历史结果完全一致：
+#   temperature 照常生效、max_tokens 仍是 config.MAX_TOKENS(2048)。
+def _chat_profile(group, temperature):
+    if group == "A9":
+        return dict(temperature=None,                     # 思考模式不支持 temperature
+                    thinking=config.THINKING_A9,
+                    reasoning_effort=config.REASONING_EFFORT,
+                    max_tokens=config.MAX_TOKENS_A9)      # 推理+输出共享，须放开
+    return dict(temperature=temperature,                  # 老组：调用方传什么就用什么
+                thinking=None, reasoning_effort=None, max_tokens=None)
+
+
 # ---------------------------------------------------------------- O1
 def run_oneshot(context, question, db_id, temperature):
     r = _blank()
@@ -123,8 +137,11 @@ def _rejected(r, db_id):
         return True
 
 
-def run_agent(context, question, db_id, temperature, tools):
+def run_agent(context, question, db_id, temperature, tools, group="A1"):
     """agent 循环。MAX_STEPS 是【上限而非固定轮数】：模型提交答案或不再请求工具即停。
+
+    `temperature` 形参仅对老组生效；A9 的 profile 会把它覆盖成"不传"（思考模式
+    下该参数被平台忽略），所以这里必须用 `**prof` 覆盖而不是并列传两个 temperature。
 
     ★ 终止动作 submit_answer（本仓库修正，实测必需）：
       实测该模型在 3 轮里【不会】主动停止请求工具（20/20 打满上限）；而工具被禁用后，
@@ -138,17 +155,22 @@ def run_agent(context, question, db_id, temperature, tools):
     """
     r = _blank()
     conn = get_conn(db_id)
-    messages = [{"role": "system", "content": agent_system(context)},
+    messages = [{"role": "system", "content": agent_system(context, group)},
                 {"role": "user", "content": question}]
     last_ok_sql = None
     submit_tool = [t for t in (tools or []) if t["function"]["name"] == "submit_answer"]
+    prof = _chat_profile(group, temperature)
+    # A10 的每题可变状态（declare_intent 写入、run_sql 读取做硬门）。
+    # ★ 必须是【每题】独立的 dict，不能是模块级全局 —— run.py 用线程池并发跑
+    #   同一 db 的多道题，全局状态会串题（A 题的承诺泄漏给 B 题）。
+    state = {} if group == "A10" else None
 
     try:
         for step in range(config.MAX_STEPS):
             # 末轮：撤走探索类工具，只保留 submit_answer
             is_last = (step == config.MAX_STEPS - 1)
             offered = submit_tool if is_last else tools
-            msg, meta = chat(messages, tools=offered, temperature=temperature)
+            msg, meta = chat(messages, tools=offered, **prof)
             sql = extract_sql(msg.content)
             turn = {"turn": step, "sql": sql, "tool_calls": [], "tool_results": [],
                     "qet": None, "called_tools": False,
@@ -170,7 +192,7 @@ def run_agent(context, question, db_id, temperature, tools):
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                out, qet = dispatch(conn, db_id, tc.function.name, args)
+                out, qet = dispatch(conn, db_id, tc.function.name, args, state)
                 turn["tool_calls"].append({"name": tc.function.name, "args": args})
                 turn["tool_results"].append(out)
 
