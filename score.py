@@ -61,6 +61,74 @@ def judge(pred_sql, gold_sql, db_id, timeout=JUDGE_TIMEOUT):
         return 0, "exec_error"
 
 
+def o3_mechanism_health(recs):
+    """O3 机制体检 —— 验证「采样必须发散」这一前提是否成立。
+
+    ★ 为什么必须在解读 EX 之前看（本项目唯一一个"机制死了但数字照常好看"的
+      失败模式）：思考模式一旦未关闭，temperature 会被平台【静默忽略】，
+      同一 prompt 的三次采样得到完全相同的 SQL —— O3 退化成 O1，
+      而 EX 上看不出任何异常。所以这一步不是锦上添花，是前置排除。
+
+    ★ 判据刻意分两层，不混：
+      静态层（确定性）：直接查根因，可判 PASS/FAIL。
+      数据层（经验观察）：只如实报告，不下结论 —— O3 从未跑过全量，
+        任何"全同率应 < X%"的阈值都是编出来的假精度。
+        把数打出来，异常一眼可见。
+
+    只看 O3；其它组不调用本函数。
+    """
+    k = config.K_CANDIDATES
+    n = len(recs)
+    same = diff = short = no_cand = all_failed = 0
+    clusters, errs = defaultdict(int), defaultdict(int)
+
+    for r in recs:
+        cands = [str(c).strip() for c in (r.get("candidates") or []) if str(c or "").strip()]
+        if not cands:
+            no_cand += 1
+        else:
+            if len(cands) < k:
+                short += 1
+            if len(set(cands)) == 1:        # 三次采样吐出同一条 SQL
+                same += 1
+            else:
+                diff += 1
+        groups = r.get("groups") or []
+        clusters[len(groups)] += 1          # 执行结果集聚成几簇（1 簇 = 该题投票无分歧）
+        if not groups:
+            all_failed += 1                 # 候选全执行失败 -> 退回首个非空 SQL（采集兜底）
+        for e in (r.get("exec_errors") or []):
+            errs["ok" if e is None else str(e).split(":")[0]] += 1
+
+    # ---------------- 静态层：确定性的根因检查 ----------------
+    static = [
+        ("思考模式已关闭（否则 temperature 静默失效）",
+         config.THINKING.get("type") == "disabled", f"THINKING={config.THINKING}"),
+        ("采样温度 > 0（否则三次采样必然同解）",
+         config.TEMPERATURE_SAMPLING > 0, f"T={config.TEMPERATURE_SAMPLING}"),
+        ("候选数 >= 2（否则投票无意义）",
+         k >= 2, f"K_CANDIDATES={k}"),
+    ]
+    print("\n  --- O3 机制体检（解读 EX 前必看）---")
+    print("    [静态层 · 判 PASS/FAIL]")
+    for name, ok, detail in static:
+        print(f"      [{'PASS' if ok else 'FAIL'}] {name}   {detail}")
+    if not all(ok for _, ok, _ in static):
+        print("      ⚠ 静态层未通过：O3 的机制前提不成立，")
+        print("        本次 EX 不能当作「采样投票」的效果来解读。")
+
+    # ---------------- 数据层：只报告，不下结论 ----------------
+    print("    [数据层 · 只报告，无归档基准]")
+    print(f"      记录 {n}   候选数不足 {k} 的题 {short}   无候选 {no_cand}")
+    print(f"      三次候选全同 : {same:4d} ({same / n:6.1%})"
+          f"   ← 越接近 100% 越可疑，结合静态层判断")
+    print(f"      候选有差异   : {diff:4d} ({diff / n:6.1%})")
+    print(f"      结果集簇数分布: {dict(sorted(clusters.items()))}"
+          f"   （1 簇 = 该题投票无分歧）")
+    print(f"      候选全失败退回: {all_failed:4d}   ← 采集兜底，报告需披露")
+    print(f"      候选执行结果 : {dict(errs)}")
+
+
 def main(group, out=None):
     gold = load_gold()
     qs = load_questions()
@@ -72,6 +140,10 @@ def main(group, out=None):
     recs = [r for r in recs if r.get("failure_type") != "api_error" and "final_sql" in r]
     print(f"[{group}] 读入 {len(recs)} 条（来自 {in_path.name}，"
           f"已剔除 api_error 与无 final_sql 的记录）")
+
+    # O3 的机制前提必须在读数字之前排掉（见 o3_mechanism_health 的 docstring）
+    if group == "O3":
+        o3_mechanism_health(recs)
 
     n_api_error = sum(1 for l in open(in_path, encoding="utf-8")
                       if json.loads(l).get("failure_type") == "api_error")
