@@ -1,13 +1,12 @@
-"""methods.py —— 五组对照的实验机制（技术含量最高的文件）
+"""methods.py —— 三组对照的实验机制（技术含量最高的文件）
 
     O1  run_oneshot         单次调用，无工具，T=0.0
     O3  run_selfconsistency 采样 K=3，T=0.7，按【执行结果集】聚类后选出一条 SQL
-    A1  run_agent           agent 循环，工具=[run_sql]
-    A2  run_agent           工具=+get_column_values
-    A3  run_agent           工具=+get_column_desc
+    A1  run_agent           agent 循环，工具 = [run_sql, submit_answer]，T=0.0
+                            （A1 ≡ 历史文档里的 A1v2：含输出形态自检）
 
 统一返回结构（见 _blank），每个 turn 都埋了 call_latency + 4 个 token 分项，
-因为阶段 7 的 EX@k / 延迟分解 / 成本 / 工具分布全靠 turns。
+因为 EX@k / 延迟分解 / 成本 / 工具分布全靠 turns。
 
 相对手册的加固：
   * O3 记录候选执行失败的原因（手册用裸 except 吞掉，导致无法解释 O3 数据）
@@ -27,20 +26,6 @@ from db import execute, QueryTimeout
 def _blank():
     return {"final_sql": None, "turns": [], "candidates": [], "first_exec_ok": None,
             "final_sql_source": None, "submitted": False, "submit_attempts": 0}
-
-
-# ---------------------------------------------------------------- A9 思考模式
-# A9 = A1 的逐字同一 prompt + 逐字同一工具，【唯一自变量】是原生思考开关。
-# 老组（O1/O3/A1~A8）在 _chat_profile 里取默认值，故行为与历史结果完全一致：
-#   temperature 照常生效、max_tokens 仍是 config.MAX_TOKENS(2048)。
-def _chat_profile(group, temperature):
-    if group == "A9":
-        return dict(temperature=None,                     # 思考模式不支持 temperature
-                    thinking=config.THINKING_A9,
-                    reasoning_effort=config.REASONING_EFFORT,
-                    max_tokens=config.MAX_TOKENS_A9)      # 推理+输出共享，须放开
-    return dict(temperature=temperature,                  # 老组：调用方传什么就用什么
-                thinking=None, reasoning_effort=None, max_tokens=None)
 
 
 # ---------------------------------------------------------------- O1
@@ -72,6 +57,10 @@ def run_selfconsistency(context, question, db_id, temperature):
     注意命名（报告里要写准）：投的是【哪个 SQL】而不是哪个结果集——
     用结果集做聚类依据，再从胜出簇里挑一条真实可执行的 SQL 输出
     （结果集本身无法交给 execute_sql 判分）。
+
+    ★ T=0.7 是机制的内在要求：T=0 时同一 prompt 采样三次会得到三条相同 SQL，
+      投票无意义、O3 退化成 O1。且必须显式关闭思考模式，否则 temperature
+      被平台静默忽略，同样退化成 O1。
     """
     r = _blank()
     conn = get_conn(db_id)
@@ -114,7 +103,7 @@ def run_selfconsistency(context, question, db_id, temperature):
     return r
 
 
-# ---------------------------------------------------------------- A1 / A2 / A3
+# ---------------------------------------------------------------- A1
 
 def _rejected(r, db_id):
     """末轮答案是否应被否决：在真实库上执行失败（语法错/表不存在/超时）。
@@ -137,11 +126,8 @@ def _rejected(r, db_id):
         return True
 
 
-def run_agent(context, question, db_id, temperature, tools, group="A1"):
+def run_agent(context, question, db_id, temperature, tools):
     """agent 循环。MAX_STEPS 是【上限而非固定轮数】：模型提交答案或不再请求工具即停。
-
-    `temperature` 形参仅对老组生效；A9 的 profile 会把它覆盖成"不传"（思考模式
-    下该参数被平台忽略），所以这里必须用 `**prof` 覆盖而不是并列传两个 temperature。
 
     ★ 终止动作 submit_answer（本仓库修正，实测必需）：
       实测该模型在 3 轮里【不会】主动停止请求工具（20/20 打满上限）；而工具被禁用后，
@@ -155,22 +141,17 @@ def run_agent(context, question, db_id, temperature, tools, group="A1"):
     """
     r = _blank()
     conn = get_conn(db_id)
-    messages = [{"role": "system", "content": agent_system(context, group)},
+    messages = [{"role": "system", "content": agent_system(context)},
                 {"role": "user", "content": question}]
     last_ok_sql = None
     submit_tool = [t for t in (tools or []) if t["function"]["name"] == "submit_answer"]
-    prof = _chat_profile(group, temperature)
-    # A10 的每题可变状态（declare_intent 写入、run_sql 读取做硬门）。
-    # ★ 必须是【每题】独立的 dict，不能是模块级全局 —— run.py 用线程池并发跑
-    #   同一 db 的多道题，全局状态会串题（A 题的承诺泄漏给 B 题）。
-    state = {} if group == "A10" else None
 
     try:
         for step in range(config.MAX_STEPS):
             # 末轮：撤走探索类工具，只保留 submit_answer
             is_last = (step == config.MAX_STEPS - 1)
             offered = submit_tool if is_last else tools
-            msg, meta = chat(messages, tools=offered, **prof)
+            msg, meta = chat(messages, tools=offered, temperature=temperature)
             sql = extract_sql(msg.content)
             turn = {"turn": step, "sql": sql, "tool_calls": [], "tool_results": [],
                     "qet": None, "called_tools": False,
@@ -192,7 +173,7 @@ def run_agent(context, question, db_id, temperature, tools, group="A1"):
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                out, qet = dispatch(conn, db_id, tc.function.name, args, state)
+                out, qet = dispatch(conn, db_id, tc.function.name, args)
                 turn["tool_calls"].append({"name": tc.function.name, "args": args})
                 turn["tool_results"].append(out)
 

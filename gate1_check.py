@@ -8,7 +8,7 @@ from collections import Counter
 from tqdm import tqdm
 import config
 from data import (load_questions, build_context, schema_whitelist,
-                  schema_text, desc_index, db_path)
+                  schema_text, db_path)
 
 RESULTS = []
 
@@ -118,24 +118,6 @@ def main():
             unreadable.append(f"{d}: {e}")
     check("库文件齐全", not missing, f"缺失：{missing if missing else '无'}")
     check("库文件可读", not unreadable, f"不可读：{unreadable if unreadable else '无'}")
-
-    print("\n--- 补充 B：desc_index 编码回退（A3 组依赖）---")
-    # 实测：4 个 CSV 是 cp1252 而非 UTF-8，不处理会让 A3 整题失败
-    n_desc, bad = 0, []
-    for d in dbs:
-        try:
-            idx = desc_index(d)
-        except Exception as e:
-            bad.append(f"{d}: {type(e).__name__}: {e}")
-            continue
-        n_desc += len(idx)
-        for (t, col) in idx:
-            if "\ufeff" in str(t) or "\ufeff" in str(col):
-                bad.append(f"{d}: BOM 污染 {t}.{col}")
-    check("desc_index 全部库可解析（含 cp1252 回退）", not bad,
-          f"错误：{bad[:3] if bad else '无'}")
-    check("desc_index 未被 BOM 污染", not any("BOM" in b for b in bad))
-    print(f"       database_description 条目合计：{n_desc}")
 
     # ------------------------------------------------- 补充 C：gold 与 JSON 对齐
     print("\n--- 补充 C：JSON[i] 与 gold 第 i 行对齐（score.py 按下标取 gold 的前提）---")

@@ -1,6 +1,25 @@
 # db_agent
 
-> 项目简介待补充。
+在**冻结的 API 模型**（`deepseek-flash`，不训练）上，对比 one-shot 与 agent 闭环在
+text-to-SQL 上的表现。数据集 BIRD **Mini-Dev V1**（SQLite，500 题 / 11 库 / 79 表），
+判分复用官方 `execute_sql` + `calculate_ex`。
+
+仓库只保留三组实验：
+
+| 组 | 方法 | 温度 | 工具 | 归档结果 |
+| --- | --- | --- | --- | --- |
+| `O1` | one-shot ×1 | 0.0 | — | 58.40%（基准） |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 未跑全量 |
+| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%，McNemar p=0.0059 ✅** |
+
+**结论：agent 闭环 + 输出形态自检相对 one-shot 提升 +5.0pt EX，统计显著，
+代价是 6.6 倍 token 成本。** 完整论证、代价表与剩余错误结构见
+[`实验结论.md`](实验结论.md)。
+
+> `A1 ≡ 历史文档中的 "A1v2"`。其余对照组（A2~A10）的代码、归档产物与结论章节
+> 已随本次收敛移除。
+
+---
 
 本仓库使用 **conda** 管理 Python 版本，环境名为 `db_agent`。
 conda 只负责提供一个隔离干净的 Python 解释器，第三方包统一用 **pip** 安装。
@@ -145,14 +164,13 @@ pip install func_timeout psycopg2-binary pymysql
 ~/.conda/envs/db_agent/bin/python gate1_check.py
 ```
 
-应为 **23/23 通过**、退出码 0。
+全部通过、退出码 0（具体项数以脚本输出为准；本项目收敛后已移除与 `desc_index`
+相关的 2 项检查）。
 
 ### 已知陷阱（均已实测，`data.py` 已处理）
 
 | 陷阱 | 后果 | 处理 |
 | --- | --- | --- |
-| **4 个 CSV 是 `cp1252` 而非 UTF-8**<br>`european_football_2/{Player,Team}_Attributes.csv`<br>`formula_1/qualifying.csv`、`student_club/Budget.csv` | 按 utf-8 硬读抛 `UnicodeDecodeError`，**A3 组在这些库上整题失败** | `data.py` 用 `utf-8-sig → cp1252 → latin-1` 三级回退 |
-| **CSV 含 BOM** | 首列名变成 `\ufefforiginal_column_name`，解析全空 | 用 `utf-8-sig` 解码 |
 | **`question_id` 有重复值**（137/138 各 2 次） | 用它做断点续跑 key 会**漏跑 2 题**，最终只有 498 条 | 改用 `qidx`（0..499 下标） |
 
 ---
@@ -281,9 +299,9 @@ print(resp.choices[0].message.content)
 | `tool_choice` | 思考模式下**不支持 `required` 及指定具体工具**，会返回 400 |
 
 > ⚠️ 三个容易踩的坑：
-> 1. `MAX_TOKENS` 若小于思考所需，`reasoning_content` 会吃光额度导致正文截断，
->    `finish_reason` 返回 `length`。本项目 A9 组因此单独放开到
->    `MAX_TOKENS_A9 = 393216`（**老组一律不动，仍是 2048**）。
+> 1. 思考模式下**推理 token 与正式输出共享 `max_tokens`**，推理写满额度会让正文
+>    （含 `tool_call` 参数）被截断，`finish_reason` 返回 `length`。
+>    本项目一律**关闭思考模式**（见下一条），故 `MAX_TOKENS` 保持 2048 即可。
 > 2. 强制工具调用（`tool_choice="required"`）在思考模式下直接 400；
 >    要么改用 `auto`，要么先 `thinking={"type": "disabled"}` 关掉思考模式。
 > 3. **官方价格页把 MAX OUTPUT 写成 "384K"，与 API 实际接受的 393216 不一致。**
@@ -315,7 +333,7 @@ cd ~/db_agent
 conda activate db_agent
 
 # ② 数据（见「数据准备」）：把 MINIDEV 摆到 data/，生成 .jsonl，clone 官方评测脚本
-~/.conda/envs/db_agent/bin/python gate1_check.py     # 期望 23/23 通过
+~/.conda/envs/db_agent/bin/python gate1_check.py     # 数据准备验收，应全部通过
 
 # ③ 密钥：.env 写入 DEEPSEEK_API_KEY=sk-...
 ~/.conda/envs/db_agent/bin/python gate0_check.py     # 期望 Gate 0 通过
@@ -323,36 +341,24 @@ conda activate db_agent
 
 ### 跑各组
 
-**跑哪几组取决于你要复现什么**——本项目最终只用两组得出结论，其余 9 组是
-**已归档的负面结果**（完整图谱见 [`实验结论.md` §3.0](实验结论.md)）：
+本项目**只有三组**，且三组共用同一批 500 题，逐题配对比较：
 
-| 你要复现的目标 | 跑这几组 | 命令 |
-| --- | --- | --- |
-| **主结果**（唯一显著的对比） | `O1` `A1` | `run.py --group O1` / `--group A1` |
-| 负面结果存档 | `A2` `A4`~`A10` | 各自的 `run.py --group <G>` |
-| 未执行（不要声称跑过） | `A3` | `results/A3.jsonl` 是空文件 |
+| 组 | 方法 | 温度 | 工具 | 归档结果 |
+| --- | --- | --- | --- | --- |
+| `O1` | one-shot ×1 | 0.0 | — | 58.40% |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | **未跑全量** |
+| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%（p=0.0059）** |
 
-每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）：
+> **`A1 ≡ 历史文档中的 "A1v2"`**：`prompts.AGENT_SYSTEM` 第 1 步的「输出形态自检」
+> 是唯一被证据支持的机制改进，因此**基线冻结**——改动措辞会毁掉与归档结果的
+> 可比性（`gate2_check.py` 有守卫）。
 
 ```bash
-# 主结果：两组都跑，然后配对比较
+# 主结果：两组都跑，然后判分 + 配对比较（O3 可选）
 for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 ```
 
-| 组 | 方法 | 温度 | 工具 | 结论 |
-| --- | --- | --- | --- | --- |
-| `O1` | one-shot ×1 | 0.0 | — | 基准 58.40% |
-| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 未跑全量 |
-| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%，p=0.0059 ✅** |
-| `A2` | agent 循环 | 0.0 | + `check_result` | 0（同义反复） |
-| `A3` | agent 循环 | 0.0 | + `get_column_desc` | **从未执行** |
-| `A4` | agent 循环 | 0.0 | + `explore_schema` | ≈0 |
-| `A5` | agent 循环 | 0.0 | + `declare_shape` | 0（工具被忽略 49/49） |
-| `A6` | agent 循环 | 0.0 | 同 A1 | −3.0pt（查询计划 CoT） |
-| `A7` | agent 循环 | 0.0 | 同 A1 | −4.0pt（分治 CoT） |
-| `A8` | agent 循环 | 0.0 | + `check_values` | 0 |
-| `A9` | agent 循环（**原生思考模式**） | 被平台忽略 | 同 A1 | −0.20pt（n=494, p=1.00） |
-| `A10` | agent 循环（**承诺硬门 + 语义对质**） | 0.0 | + `declare_intent` | −0.20pt（n=494, p=1.00） |
+每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）。
 
 冒烟（固定取前 N 条）：
 
@@ -374,22 +380,6 @@ for G in O1 A1; do $P score.py --group $G; done
 $P paired.py O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
 ```
 
-### 抽样脚本（两种用途，混用会产生假信号）
-
-| 脚本 | 抽样方式 | 能回答什么 |
-| --- | --- | --- |
-| `make_samples.py` | 按**难度**分层，比例与全量一致 | **能估效果**；生成全部清单到 `data/` |
-| `make_pilot_targeted.py` | 按**失败类型**定向 | **只能定位机制** |
-| `_measure_B.py` / `_measure_intent.py` | 不抽样，离线量覆盖率/误杀率/自伤 | 上线前的守门，**0 API 成本** |
-
-题目子集清单落在 `data/*_qidx.json`（**不是** `results/`——后者被 gitignore）。
-`python make_samples.py --check` 会校验生成逻辑与归档清单**逐题一致**，
-确保 fresh clone 后"跑了哪些题"可精确复现。
-
-> ⚠️ 用定向样本估效果会得到假提升。本项目已实测三次：
-> A4 定向样本 +37pt、A6/A7 的 30 题 +6.67pt、A10 的 102 困难题 +2.94pt，
-> **换成代表性样本后全部归零或反向**。详见 [`实验结论.md` §10](实验结论.md)。
-
 ### 判分
 
 ```bash
@@ -401,8 +391,8 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 ### 验收
 
 ```bash
-~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点（23 项）
-~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（74 项，不发 API）
+~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点
+~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（不发 API）
 ~/.conda/envs/db_agent/bin/python gate2_check.py              # 另跑 1 题 A1 做端到端校验
 ```
 
@@ -412,7 +402,7 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 | --- | --- |
 | 样本 | 500 题 / 11 库 / 79 表 |
 | 单组全量耗时 | **约 2 分钟**（并发 20） |
-| 单组全量成本 | A1 ¥5.3 / A10 ¥6.9（低谷价）；O1 约 ¥0.4 |
+| 单组全量成本 | A1 ¥5.3（低谷价）；O1 约 ¥0.4 |
 | 并发提示 | `--concurrency 20` 是安全值；模型侧限流 2500 并发 |
 
 > 历史记录里「约 15 分钟（并发 5）」是早期用默认并发 5 跑出来的。

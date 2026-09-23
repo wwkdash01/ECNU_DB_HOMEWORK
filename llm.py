@@ -3,19 +3,11 @@
 相对手册（§2.2）的四处调整（均有原因，见各处注释）：
   1. 密钥走 config.require_api_key()，而不是裸 os.environ[...]
   2. 显式传 extra_body={"thinking": ...} —— 手册写于模型默认非思考的年代。
-     注：deepseek-flash 官方【默认开启】思考模式，所以这里传的是 disabled；
-     A9 反向传 enabled，于是 O/A 全体与历史结果口径不变。
-     不关思考则 temperature 静默失效，O3 采样机制不成立。
+     注：deepseek-flash 官方【默认开启】思考模式，所以这里传的是 disabled。
+     不关思考则 temperature 静默失效，O3 采样机制不成立（同一 prompt 采样三次
+     会得到三条相同 SQL，O3 退化成 O1）。
   3. 只重试【瞬时】错误；参数错/鉴权错立刻抛，避免每题白等 7 秒
   4. meta 增记 finish_reason —— 'length' 表示被 max_tokens 截断（静默失败信号）
-  5. A9 增记 reasoning_tokens —— 推理 token 按 output 计费，不记会低估成本
-
-★ A9 的一个隐式依赖（方法层面，但成因在这里）：
-  带 tools 的请求，官方要求【所有历史轮次的 reasoning_content 都必须回传】，
-  否则 API 直接 400。本仓库无需特判 —— methods.run_agent 用
-  `messages.append(msg)` 追加 SDK 原始消息对象，而 openai==3.16.2 的
-  BaseModel 是 extra="allow"，reasoning_content 会原样保留并序列化回传。
-  若将来把 append(msg) 改成手搓 dict，必须显式带上 reasoning_content。
 """
 import time
 import re
@@ -48,8 +40,7 @@ except ImportError:                                   # SDK 版本差异兜底
     _RETRYABLE = (Exception,)
 
 
-def chat(messages, tools=None, temperature=None, thinking=None,
-         reasoning_effort=None, max_tokens=None):
+def chat(messages, tools=None, temperature=None, thinking=None, max_tokens=None):
     """调用一次模型，返回 (message, meta)。
 
     meta 含【每次调用单独计时】与 token 分项 —— 事后补不回来。
@@ -57,14 +48,8 @@ def chat(messages, tools=None, temperature=None, thinking=None,
         总延迟 = Σ call_latency + Σ qet + 调度开销
     没有它就说不清长尾来自「agent 多轮」还是「API 自身抖动」。
 
-    thinking 参数（A9 用）三处语义变化，官方文档明写：
-      * 思考模式【不支持 temperature】，传了不报错但也不生效 —— 故这里
-        思考模式下干脆不传，避免报告里出现"设了 T=0"的假陈述。
-      * 推理 token 与正式输出【共享 max_tokens】，且推理长度不可预知，
-        所以 A9 必须单独放开上限（config.MAX_TOKENS_A9 = 393216，API 实测上限），
-        否则会被静默截断。
-      * reasoning token 按 output 计费，必须记账（见下方 reasoning_tokens），
-        否则成本表会低估一大截。
+    thinking：deepseek-flash 默认开启思考模式，而思考模式下【不支持 temperature】
+    （传了不报错但也不生效）。本项目必须显式关闭，否则 O3 的采样与 T=0 口径都失效。
     """
     thinking = config.THINKING if thinking is None else thinking
     enabled = thinking.get("type") == "enabled"
@@ -80,8 +65,6 @@ def chat(messages, tools=None, temperature=None, thinking=None,
         )
         if not enabled:
             kwargs["temperature"] = temperature          # 思考模式下该参数无效，故不传
-        if reasoning_effort:
-            kwargs["reasoning_effort"] = reasoning_effort
         if tools:
             kwargs["tools"] = tools
 
@@ -95,13 +78,10 @@ def chat(messages, tools=None, temperature=None, thinking=None,
         call_latency = time.perf_counter() - t0
 
         u = resp.usage
-        _det = getattr(u, "completion_tokens_details", None)
         meta = dict(
             call_latency=call_latency,
             prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(u, "completion_tokens", 0) or 0,
-            # 思考模式专用：推理 token 按 output 计费，不记这一项就会低估成本
-            reasoning_tokens=getattr(_det, "reasoning_tokens", 0) or 0,
             cache_hit_tokens=getattr(u, "prompt_cache_hit_tokens", 0) or 0,
             cache_miss_tokens=getattr(u, "prompt_cache_miss_tokens", 0) or 0,
             finish_reason=getattr(resp.choices[0], "finish_reason", None),

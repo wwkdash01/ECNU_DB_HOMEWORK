@@ -51,22 +51,6 @@ TEMPERATURE_SAMPLING = 0.7
 # 且一旦模型跑飞会按输出价烧钱。2048 足够容纳 SQL + 少量说明文字。
 MAX_TOKENS  = 2048
 
-# ---------- A9 专用：原生思考模式 ----------
-# A9 = A1 的【逐字同一 prompt、逐字同一工具】，唯一自变量是 thinking 开关。
-# 老组（O1/O3/A1~A8）一律不受影响：MAX_TOKENS 仍是 2048、temperature 仍生效，
-# 因此历史结果与今后的对照重跑口径完全一致。
-THINKING_A9        = {"type": "enabled"}
-REASONING_EFFORT   = "max"      # 官方映射：max -> max（最高档）。low/high/max 三档
-
-# 思考模式下【推理 token 与正式输出共享 max_tokens】，而推理长度不可预知。
-# 若沿用 2048，模型常在写完 SQL 前被截断（finish_reason='length'），
-# 表现为"tool_call 参数为空"——会被误读成"模型不会用工具"。故 A9 放开到模型上限。
-# 393216 是实测上限：发 400000 时 API 报
-#   "the valid range of max_tokens is [1, 393216]"
-# （注意：官方价格页把 MAX OUTPUT 写成 "384K"，与 API 实际接受的 393216 不一致；
-#  以 API 报错信息为准，别照抄价格页。）
-MAX_TOKENS_A9      = 393216
-
 # 单次 API 请求的网络超时（秒），防止请求悬挂拖死整批
 REQUEST_TIMEOUT = 120
 
@@ -96,7 +80,6 @@ SMOKE_N       = 20   # 冒烟测试题数（取前 N 条，固定，不要随机
 RESULT_ROW_LIMIT      = 100    # run_sql 最多返回行数
 QUERY_TIMEOUT_SEC     = 5      # 单条 SQL 执行超时
 TOOL_OUTPUT_MAX_CHARS = 2000   # 工具返回值截断长度
-VALUE_SAMPLE_LIMIT    = 20     # get_column_values 取样条数
 
 # ---------- 重试与并发 ----------
 API_MAX_RETRIES  = 3

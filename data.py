@@ -1,14 +1,11 @@
 """data.py —— 数据加载与 schema 上下文构建
 
-相对手册（§1.6）的三处实测调整：
+相对手册（§1.6）的两处实测调整：
   1. mini_dev_sqlite.json 顶层是 list（手册兼容 dict 的写法保留作兜底）
   2. question_id 已存在且【有 2 个重复值】（137/138 各出现两次），不能用作断点续跑的 key
      → 新增 qidx（0..499 下标）作为唯一标识；JSON[i] 与 gold 第 i 行已实测 500/500 对齐
-  3. database_description 的 CSV 列名已实测为
-     original_column_name,column_name,column_description,data_format,value_description
-     （与手册假设一致，无需修改）
 """
-import json, csv, sqlite3
+import json, sqlite3
 from functools import lru_cache
 import config
 
@@ -68,42 +65,6 @@ def schema_text(db_id):
     ).fetchall()
     conn.close()
     return "\n".join(sorted(r[0] for r in rows))
-
-
-@lru_cache(maxsize=None)
-def desc_index(db_id):
-    """{(table, col): (column_description, value_description)}
-
-    CSV 列名已实测（california_schools/...，含 UTF-8 BOM）：
-      original_column_name, column_name, column_description, data_format, value_description
-    注意两点（均为实测）：
-      * utf-8-sig：BOM 会让首列名变成 '\\ufefforiginal_column_name'，必须用 sig 解码
-      * 编码混杂：european_football_2/{Player,Team}_Attributes.csv、formula_1/qualifying.csv、
-        student_club/Budget.csv 是 **cp1252** 而非 UTF-8；不处理会在这些库上抛
-        UnicodeDecodeError，导致 A3 整题失败
-    """
-    idx, ddir = {}, config.DB_DIR / db_id / "database_description"
-    if not ddir.exists():
-        return idx
-    for f in sorted(ddir.glob("*.csv")):
-        rows = None
-        for enc in ("utf-8-sig", "cp1252", "latin-1"):   # latin-1 永不失败，作最终兜底
-            try:
-                with open(f, encoding=enc) as fh:
-                    rows = list(csv.DictReader(fh))
-                break
-            except UnicodeDecodeError:
-                continue
-        if rows is None:
-            continue
-        for row in rows:
-            col = (row.get("original_column_name") or row.get("column_name") or "").strip()
-            if col:
-                idx[(f.stem, col)] = (
-                    (row.get("column_description") or "").strip(),
-                    (row.get("value_description") or "").strip(),
-                )
-    return idx
 
 
 def build_context(db_id, evidence):

@@ -1,12 +1,11 @@
 """paired.py —— 两组实验的配对比较（McNemar 精确检验）
 
 用法：
-    python paired.py A1_s30_scored.jsonl A9_s30_scored.jsonl
-    python paired.py A1v2_full_scored.jsonl A9_full_scored.jsonl
+    python paired.py O1_scored.jsonl A1_scored.jsonl
 
 ★ 为什么必须配对，不能比两个绝对数：
   本仓库实测 T=0 也【不可复现】——同配置重跑，SQL 只有 ~30% 完全相同，
-  30 题里会有 ~2 题 EX 翻盘。所以"历史 A1 的 63.4%"和"今天 A9 的某个数"
+  30 题里会有 ~2 题 EX 翻盘。所以"历史 O1 的 58.4%"和"今天 A1 的某个数"
   直接相减，差额里混着两次运行的漂移。McNemar 只看【同一题上两组是否不一致】，
   把不翻盘的题排除掉，剩下的差值才是处理效应。
 
