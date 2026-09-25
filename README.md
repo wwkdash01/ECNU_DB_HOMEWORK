@@ -50,8 +50,7 @@ ECNU-DB-HOMEWORK/
 │   │   ├── data.py              #   数据加载 + build_context（O 与 A 逐字共用的起点）
 │   │   ├── db.py                #   唯一执行入口：只读连接、查询超时、QET
 │   │   ├── llm.py               #   唯一 API 出口：chat() + extract_sql()
-│   │   ├── metrics.py           #   列级召回 + 幻觉率（sqlglot 解析）
-│   │   └── plot_utils.py        #   空壳：阶段 7 可视化预留位，未实现
+│   │   └── metrics.py           #   列级召回 + 幻觉率（sqlglot 解析）
 │   ├── experiment/              # 三组实验本体
 │   │   ├── run.py               #   跑组入口（--group/--limit/--concurrency/--out）
 │   │   ├── methods.py           #   run_oneshot / run_selfconsistency / run_agent
