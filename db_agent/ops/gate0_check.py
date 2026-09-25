@@ -2,7 +2,7 @@
 
 import sqlite3, sys, json
 from openai import OpenAI
-import config
+from db_agent import config
 
 
 def mask(k):

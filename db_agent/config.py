@@ -1,7 +1,10 @@
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# 本文件在 db_agent/ 包内，仓库根是它的【父目录】；可用 DB_AGENT_ROOT 覆盖
+# （便于从任意 cwd 调用，或把 data/ results/ reference/ 放到别处）。
+ROOT = Path(os.environ.get("DB_AGENT_ROOT")
+            or Path(__file__).resolve().parent.parent).resolve()
 
 # ---------- 项目级环境变量（.env）----------
 # 在 config 里加载：任何 `import config` 的脚本都自动生效，不必改每个入口。

@@ -1,5 +1,5 @@
 # gate2_check.py —— 阶段 2 验收（Gate 2）
-# 运行：~/.conda/envs/db_agent/bin/python gate2_check.py
+# 运行：python -m db_agent gate 2 [--offline]
 #
 # 大部分检查【离线】完成，不需要 API 密钥、不花钱。
 # 唯一发真实 API 调用的是「Gate 2 端到端」一节（1 次调用 + 1 次断点续跑）。
@@ -14,8 +14,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-import config
-from data import (load_questions, build_context, get_conn, db_path,
+from db_agent import config
+from db_agent.core.data import (load_questions, build_context, get_conn, db_path,
                   schema_whitelist)
 
 RESULTS = []
@@ -40,7 +40,7 @@ def section(title):
 # ======================================================================
 def check_db():
     section("1. db.py —— 执行层")
-    from db import execute, QueryTimeout
+    from db_agent.core.db import execute, QueryTimeout
 
     qs = load_questions()
     db_id = qs[0]["db_id"]
@@ -142,7 +142,7 @@ def check_db():
 # ======================================================================
 def check_llm():
     section("2. llm.py —— 抽 SQL（离线）")
-    from llm import extract_sql
+    from db_agent.core.llm import extract_sql
 
     cases = [
         ("```sql fenced", "说明\n```sql\nSELECT a FROM t;\n```\n结尾", "SELECT a FROM t"),
@@ -195,7 +195,7 @@ def check_llm():
 # ======================================================================
 def check_prompts():
     section("3. prompts.py —— 起点冻结（原则①）")
-    from prompts import oneshot_prompt, agent_system
+    from db_agent.experiment.prompts import oneshot_prompt, agent_system
 
     qs = load_questions()
     bad = []
@@ -219,7 +219,7 @@ def check_prompts():
 # ======================================================================
 def check_tools():
     section("4. tools.py —— 工具层")
-    from tools import dispatch, tools_for, TOOLS, SUBMIT_TOOL
+    from db_agent.experiment.tools import dispatch, tools_for, TOOLS, SUBMIT_TOOL
 
     qs = load_questions()
     db_id = qs[0]["db_id"]
@@ -265,7 +265,7 @@ def check_tools():
     check("4h tools_for 对 O 组返回 None", tools_for("O1") is None)
 
     # --- 4h1 A1 prompt 基线冻结 ---
-    from prompts import agent_system
+    from db_agent.experiment.prompts import agent_system
     a1p = agent_system("CTX")
     check("4h1 A1 prompt 含输出形态自检（唯一显著增益机制，不得删改）",
           "OUTPUT SHAPE" in a1p and "extra column" in a1p,
@@ -301,7 +301,7 @@ def check_tools():
 # ======================================================================
 def check_run_resume():
     section("5. run.py —— 断点续跑 key（本仓库修正）")
-    from run import load_done
+    from db_agent.experiment.run import load_done
 
     tmp = config.RESULTS_DIR / "_gate2_resume_test.jsonl"
     tmp.parent.mkdir(exist_ok=True)
@@ -352,7 +352,7 @@ def check_run_resume():
 # ======================================================================
 def check_gate2_e2e(limit=1, skip=False):
     section("6. Gate 2 端到端 —— 跑 A1 的 N 条并校验 jsonl 字段")
-    from run import main as run_main, load_done
+    from db_agent.experiment.run import main as run_main, load_done
 
     if skip:
         print("已跳过（--offline）。需要真实 API 调用：1 次 LLM + 若干工具执行。")

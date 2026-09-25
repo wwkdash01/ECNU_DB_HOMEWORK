@@ -63,6 +63,14 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   python-dotenv==1.2.3
 ```
 
+可选装**复刻流程 TUI**（`repro_tui.py`）——跑实验本身不需要它：
+
+```bash
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple textual==8.2.8
+```
+
+> `fetch_data.py` 只用标准库 + 已装的 `tqdm`，**不需要额外依赖**。
+
 想省掉每次都敲 `-i`，可以先固化镜像源（写入用户级 `~/.config/pip/pip.conf`）：
 
 ```bash
@@ -161,7 +169,7 @@ pip install func_timeout psycopg2-binary pymysql
 ### 步骤 5 · 验收
 
 ```bash
-~/.conda/envs/db_agent/bin/python gate1_check.py
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1
 ```
 
 全部通过、退出码 0（具体项数以脚本输出为准；本项目收敛后已移除与 `desc_index`
@@ -327,16 +335,16 @@ git add -An                 # 确认 .env 不在待提交列表里
 ### 前置
 
 ```bash
-cd ~/db_agent
+cd ~/db_agent          # ← 换成你自己的仓库根目录（如本机是 test_hm/ECNU-DB-HOMEWORK）
 
 # ① 环境 + 依赖（见「快速开始」，含官方评测脚本依赖 func_timeout/psycopg2-binary/pymysql）
 conda activate db_agent
 
 # ② 数据（见「数据准备」）：把 MINIDEV 摆到 data/，生成 .jsonl，clone 官方评测脚本
-~/.conda/envs/db_agent/bin/python gate1_check.py     # 数据准备验收，应全部通过
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1     # 数据准备验收，应全部通过
 
 # ③ 密钥：.env 写入 DEEPSEEK_API_KEY=sk-...
-~/.conda/envs/db_agent/bin/python gate0_check.py     # 期望 Gate 0 通过
+~/.conda/envs/db_agent/bin/python -m db_agent gate 0     # 期望 Gate 0 通过
 ```
 
 ### 跑各组
@@ -355,7 +363,7 @@ conda activate db_agent
 
 ```bash
 # 主结果：两组都跑，然后判分 + 配对比较（O3 可选）
-for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
+for G in O1 A1; do ~/.conda/envs/db_agent/bin/python -m db_agent run --group $G; done
 ```
 
 每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）。
@@ -363,7 +371,7 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 冒烟（固定取前 N 条）：
 
 ```bash
-~/.conda/envs/db_agent/bin/python run.py --group A1 --limit 20 --out A1_smoke.jsonl
+~/.conda/envs/db_agent/bin/python -m db_agent run --group A1 --limit 20 --out A1_smoke.jsonl
 ```
 
 > **`--out` 很重要**：不加它，`--limit 20` 会去读 `<group>.jsonl` 的断点记录；
@@ -376,14 +384,14 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 
 ```bash
 P=~/.conda/envs/db_agent/bin/python
-for G in O1 A1; do $P score.py --group $G; done
-$P paired.py O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
+for G in O1 A1; do $P -m db_agent score --group $G; done
+$P -m db_agent pair O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
 ```
 
 ### 判分
 
 ```bash
-for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
+for G in O1 A1; do ~/.conda/envs/db_agent/bin/python -m db_agent score --group $G; done
 ```
 
 产出 `results/<group>_scored.jsonl`，含 EX、列级召回、幻觉率、逐轮 EX@k。
@@ -391,9 +399,9 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 ### 验收
 
 ```bash
-~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点
-~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（不发 API）
-~/.conda/envs/db_agent/bin/python gate2_check.py              # 另跑 1 题 A1 做端到端校验
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1              # 数据与起点
+~/.conda/envs/db_agent/bin/python -m db_agent gate 2 --offline    # 代码与埋点（不发 API）
+~/.conda/envs/db_agent/bin/python -m db_agent gate 2              # 另跑 1 题 A1 做端到端校验
 ```
 
 ### 规模与耗时（实测）
@@ -434,6 +442,7 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 | `tqdm` | 4.70.1 | 进度条 |
 | `matplotlib` | 3.11.2 | 绘图 |
 | `python-dotenv` | 1.2.3 | 从 `.env` 读取密钥 |
+| `textual` | 8.2.8 | **复刻流程 TUI**（`repro_tui.py`）；跑实验本身不需要 |
 | `func_timeout` | 4.3.5 | **官方评测脚本依赖**，给 SQL 执行加超时 |
 | `psycopg2-binary` | 2.9.13 | **官方评测脚本依赖**（postgres 分支；只跑 SQLite 也需装） |
 | `pymysql` | 1.2.3 | **官方评测脚本依赖**（mysql 分支；只跑 SQLite 也需装） |
@@ -448,6 +457,16 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 | `anyio` | 4.15.1 |
 | `pillow` | 12.3.0 |
 | `fonttools` | 4.65.0 |
+| `rich` | 15.0.0 |
+| `pygments` | 2.21.0 |
+| `platformdirs` | 4.11.12 |
+| `markdown-it-py` | 4.2.0 |
+| `mdit-py-plugins` | 0.6.1 |
+| `linkify-it-py` | 2.2.0 |
+| `mdurl` | 0.1.2 |
+
+> 后 7 行（`rich` 起）是由 `textual` 带入的，只在装了复刻流程 TUI 依赖时出现；
+> 不装 `textual` 它们不会进入环境。
 
 ---
 

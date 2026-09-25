@@ -20,8 +20,8 @@
       注意它只能区分"执行成功/报错/几行"，无法判断语义对错（原则②：在线信号与
       离线判分严格分离）。
 """
-import config
-from db import execute, QueryTimeout
+from db_agent import config
+from db_agent.core.db import execute, QueryTimeout
 
 TOOLS = [
     {"type": "function", "function": {
@@ -89,7 +89,7 @@ def _submit(conn, db_id, sql):
     sql = (sql or "").strip().rstrip(";")
     if not sql:
         return "提交失败：sql 参数为空，请给出完整的单条查询", None
-    from llm import _QUERY_RE
+    from db_agent.core.llm import _QUERY_RE
     if not _QUERY_RE.match(sql):
         return f"提交失败：不是一条查询语句。请提交 SELECT/WITH 查询。收到：{sql[:120]}", None
     try:

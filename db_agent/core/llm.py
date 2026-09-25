@@ -14,7 +14,7 @@ import re
 
 from openai import OpenAI
 
-import config
+from db_agent import config
 
 _client = None
 

@@ -1,13 +1,13 @@
 # gate1_check.py —— 阶段 1 验收（Gate 1）
-# 运行：~/.conda/envs/db_agent/bin/python gate1_check.py
+# 运行：python -m db_agent gate 1
 #
 # 手册 §步骤 1.7 的四条通过标准 + 本项目实测补充的检查项。
 # 每条独立判定 PASS/FAIL，最后统一汇总；不因单条失败而中断，方便一次看全。
 import json, sqlite3, sys
 from collections import Counter
 from tqdm import tqdm
-import config
-from data import (load_questions, build_context, schema_whitelist,
+from db_agent import config
+from db_agent.core.data import (load_questions, build_context, schema_whitelist,
                   schema_text, db_path)
 
 RESULTS = []

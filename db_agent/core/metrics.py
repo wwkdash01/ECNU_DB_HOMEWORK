@@ -16,8 +16,8 @@
 import sqlglot
 from sqlglot import exp
 
-import config
-from data import schema_whitelist
+from db_agent import config
+from db_agent.core.data import schema_whitelist
 
 DIALECT = "sqlite"
 

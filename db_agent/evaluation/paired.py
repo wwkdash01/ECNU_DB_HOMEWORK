@@ -1,7 +1,7 @@
 """paired.py —— 两组实验的配对比较（McNemar 精确检验）
 
 用法：
-    python paired.py O1_scored.jsonl A1_scored.jsonl
+    python -m db_agent pair O1_scored.jsonl A1_scored.jsonl
 
 ★ 为什么必须配对，不能比两个绝对数：
   本仓库实测 T=0 也【不可复现】——同配置重跑，SQL 只有 ~30% 完全相同，
@@ -20,7 +20,11 @@ from collections import Counter
 from math import comb
 from pathlib import Path
 
-RESULTS = Path(__file__).resolve().parent / "results"
+from db_agent import config
+
+# ★ RESULTS 必须走 config：本文件已迁入 db_agent/evaluation/，
+#   再用 __file__ 推 "results" 会指向包内。config.ROOT 指向仓库根，两者口径统一。
+RESULTS = config.RESULTS_DIR
 
 
 def load(name):
@@ -28,7 +32,7 @@ def load(name):
 
     ★ 解析顺序：【先 cwd，再 RESULTS】。反过来（RESULTS 优先）会让 `results/` 下的
       同名文件【静默遮蔽】cwd 里的文件：在 `results/repro3/` 里跑
-      `paired.py O1_scored.jsonl A1_scored.jsonl` 会读到上一级归档那一批，
+      `python -m db_agent pair O1_scored.jsonl A1_scored.jsonl` 会读到上一级归档那一批，
       数字看着完全正常，却根本不是本批次的数据。
 
     改序不改变任何现有用法：从仓库根目录跑裸文件名时，根目录下没有该文件，

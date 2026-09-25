@@ -1,6 +1,6 @@
 """score.py —— 接官方判分脚本，产出 <group>_scored.jsonl
 
-    python score.py --group O1
+    python -m db_agent score --group O1
 
 判分链路唯一（手册原则③）：O 和 A 走同一个官方 execute_sql + calculate_ex，
 绝不自写结果比对 —— 官方 EX 是 set(pred)==set(gold)，忽略列序与重复行。
@@ -24,9 +24,9 @@ from collections import defaultdict
 from func_timeout import func_timeout, FunctionTimedOut
 from tqdm import tqdm
 
-import config
-from data import load_questions
-from metrics import column_recall, hallucination
+from db_agent import config
+from db_agent.core.data import load_questions
+from db_agent.core.metrics import column_recall, hallucination
 
 sys.path.insert(0, str(config.EVAL_DIR))
 from evaluation_utils import execute_sql          # noqa: E402

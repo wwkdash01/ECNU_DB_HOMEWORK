@@ -15,12 +15,12 @@
 import json
 import time
 
-import config
-from llm import chat, extract_sql
-from prompts import oneshot_prompt, agent_system
-from tools import dispatch
-from data import get_conn
-from db import execute, QueryTimeout
+from db_agent import config
+from db_agent.core.llm import chat, extract_sql
+from db_agent.experiment.prompts import oneshot_prompt, agent_system
+from db_agent.experiment.tools import dispatch
+from db_agent.core.data import get_conn
+from db_agent.core.db import execute, QueryTimeout
 
 
 def _blank():

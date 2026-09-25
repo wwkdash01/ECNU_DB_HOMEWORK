@@ -7,7 +7,7 @@
 """
 import json, sqlite3
 from functools import lru_cache
-import config
+from db_agent import config
 
 
 def load_questions():

@@ -895,7 +895,7 @@ if __name__ == "__main__":
 ### 步骤 2.7 验收 → Gate 2
 
 ```bash
-python run.py --group A1 --limit 3
+python -m db_agent run --group A1 --limit 3
 python - <<'EOF'
 import json
 for line in open("results/A1.jsonl", encoding="utf-8"):
@@ -918,8 +918,8 @@ EOF
 ## 阶段 3 · 冒烟与吞吐实测（~30 min）
 
 ```bash
-python run.py --group O1 --limit 20
-python run.py --group A1 --limit 20
+python -m db_agent run --group O1 --limit 20
+python -m db_agent run --group A1 --limit 20
 ```
 
 - 确认 **A1 每轮 SQL 都落盘**（EX@k 曲线全靠它）
@@ -947,8 +947,8 @@ python run.py --group A1 --limit 20
 ## 阶段 5 · O1 全量 + 对账 ⭐ 最关键的 Gate（~40 min）
 
 ```bash
-python run.py --group O1
-python score.py --group O1
+python -m db_agent run --group O1
+python -m db_agent score --group O1
 ```
 
 **官方 Mini-Dev SQLite EX baseline（已核实，来自仓库 README）**：
@@ -978,7 +978,7 @@ python score.py --group O1
 严格按 **O3 → A1 → A2 → A3** 顺序，每次只加一个变量。**每组先跑 20 题子集**：
 
 ```bash
-python run.py --group O3 --limit 20
+python -m db_agent run --group O3 --limit 20
 
 # 确认工具确实被调用了
 python - <<'EOF'
@@ -1249,9 +1249,9 @@ if __name__ == "__main__":
 ### 步骤 7.4 验收 → Gate 7
 
 ```bash
-python score.py --group O1
-python analyze.py --groups O1 O3 A1 A2 A3
-python explain.py --groups O1 A1 A3
+python -m db_agent score --group O1
+python -m db_agent analyze --results-dir results   # 注：原 `--groups` 参数已不存在（A2~A10 随实验收敛移除）
+# python explain.py --groups O1 A1 A3   # 注：explain.py 从未实现，见 db_agent/core/plot_utils.py
 ```
 
 **Gate 7**：EX@k 曲线单调不减。若 `EX@2 < EX@1` ⇒ "成功即停"逻辑有 bug。

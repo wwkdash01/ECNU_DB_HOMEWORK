@@ -1,7 +1,7 @@
 """run.py —— 批量执行三组实验，结果落盘 results/<group>.jsonl
 
-    python run.py --group A1 --limit 3        # 冒烟
-    python run.py --group O1                  # 全量
+    python -m db_agent run --group A1 --limit 3   # 冒烟
+    python -m db_agent run --group O1             # 全量
 
 相对手册（§2.6）的一处修正（本仓库实测）：
     断点续跑的 key 用 qidx 而不是 question_id —— 数据集中 question_id 有重复
@@ -15,10 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
-import config
-from data import load_questions, build_context
-from methods import run_oneshot, run_selfconsistency, run_agent
-from tools import tools_for
+from db_agent import config
+from db_agent.core.data import load_questions, build_context
+from db_agent.experiment.methods import run_oneshot, run_selfconsistency, run_agent
+from db_agent.experiment.tools import tools_for
 
 GROUPS = {
     # 组名: (方法,               温度,                  工具)

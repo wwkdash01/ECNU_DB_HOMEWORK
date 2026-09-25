@@ -15,7 +15,7 @@
   统计显著的增益来源：EX 58.40% → 63.40%，配 McNemar 精确检验 p = 0.0059。
   因此本模板【基线冻结】—— 任何措辞改动都会毁掉与归档结果的可比性。
 """
-import config
+from db_agent import config
 
 AGENT_SYSTEM = """You are a SQLite expert working with a live database. You can call tools to
 inspect the database and to validate your queries before answering.

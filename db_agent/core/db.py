@@ -12,7 +12,7 @@
 import time
 import sqlite3
 
-import config
+from db_agent import config
 
 
 class QueryTimeout(Exception):

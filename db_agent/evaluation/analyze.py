@@ -1,8 +1,8 @@
 """analyze.py —— 阶段 8「报告产出」的离线分析（零 API 成本）
 
-    python analyze.py                                  # 全部指标，含 EX@k
-    python analyze.py --results-dir results/repro3     # 指定数据目录
-    python analyze.py --no-exk                         # 跳过 EX@k（快，~10s）
+    python -m db_agent analyze                              # 全部指标，含 EX@k
+    python -m db_agent analyze --results-dir results/repro3 # 指定数据目录
+    python -m db_agent analyze --no-exk                     # 跳过 EX@k（快，~10s）
 
 存在理由（手册阶段 7.2 一直要求它，但从未实现）：
     `score.py` 只判分；`paired.py` 只做配对。报告需要的另外几类产出——
@@ -24,9 +24,9 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-import config
-from data import get_conn
-from db import execute, QueryTimeout
+from db_agent import config
+from db_agent.core.data import get_conn
+from db_agent.core.db import execute, QueryTimeout
 
 GROUPS = ("O1", "O3", "A1")
 
@@ -431,7 +431,7 @@ def main():
           "**不可把两条曲线画在同一张图上直接比。**\n")
         # 延迟导入：judge 依赖官方评测脚本，放在这里避免 --no-exk 时也付出 import 成本
         sys_path_insert_eval()
-        from score import judge, load_gold, load_questions  # noqa: E402
+        from db_agent.evaluation.score import judge, load_gold, load_questions  # noqa: E402
         gold = load_gold()
         qs = load_questions()
         P("| k | " + " | ".join(f"{g} 累计 EX@{g}" for g in have) + " |")
