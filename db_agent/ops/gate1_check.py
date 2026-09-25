@@ -1,8 +1,3 @@
-# gate1_check.py —— 阶段 1 验收（Gate 1）
-# 运行：python -m db_agent gate 1
-#
-# 手册 §步骤 1.7 的四条通过标准 + 本项目实测补充的检查项。
-# 每条独立判定 PASS/FAIL，最后统一汇总；不因单条失败而中断，方便一次看全。
 import json, sqlite3, sys
 from collections import Counter
 from tqdm import tqdm
@@ -66,14 +61,12 @@ def main():
     print("\n--- 标准 3：schema 拼装与 evidence ---")
     check("context 含 'Database schema:' 段", "Database schema:" in ctx)
     check("context 含 'External knowledge:' 段", "External knowledge:" in ctx)
-    # schema 里应能看到至少一个表名与类型关键字
     stext = schema_text(q0["db_id"])
     check("schema 文本非空", len(stext) > 0, f"{len(stext)} 字符")
     check("schema 含 CREATE TABLE", "CREATE TABLE" in stext.upper())
     has_types = any(t in stext.upper() for t in
                     ("INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "VARCHAR", "DATE"))
     check("schema 含列类型", has_types)
-    # evidence 必须【逐字】出现在 context 里；仅当为空时才回退成 'None'
     nonempty = [q for q in qs if str(q.get("evidence") or "").strip()]
     if nonempty:
         qe = nonempty[0]

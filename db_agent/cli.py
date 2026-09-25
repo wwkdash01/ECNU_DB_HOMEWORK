@@ -1,13 +1,5 @@
-"""cli.py —— 统一命令入口的子命令解析（`python -m db_agent <子命令>`）。
-
-本模块**只做一件事**：把子命令解析成「模块名 + argv 尾巴」。
-它不 import、不调用任何业务函数 —— 因此各脚本的 `__main__` 块
-（含 `"--offline" in sys.argv` 这类直接读 argv 的写法、以及缺参时打印
-`__doc__` 的 `paired.py`）行为完全不变。
-"""
 import sys
 
-# 子命令 → (模块, argv 尾巴变换)
 SUBCOMMANDS = {
     "fetch":   ("db_agent.ops.fetch_data",     lambda a: a),
     "run":     ("db_agent.experiment.run",     lambda a: a),
@@ -43,13 +35,12 @@ HELP = """\
 
 
 def resolve(argv):
-    """argv 即 sys.argv[1:]。返回 (模块名, argv 尾巴)；请求帮助时返回 (None, None)。"""
     if not argv or argv[0] in ("-h", "--help", "help"):
         return None, None
 
     sub, rest = argv[0], list(argv[1:])
 
-    if sub == "gate":                       # gate 是一个子命令带编号，不是三个子命令
+    if sub == "gate":
         if not rest or rest[0] not in ("0", "1", "2"):
             raise SystemExit("用法：python -m db_agent gate {0|1|2} [--offline]\n"
                              "  例：python -m db_agent gate 2 --offline")
@@ -62,7 +53,7 @@ def resolve(argv):
     raise SystemExit(f"未知子命令：{sub}\n\n{HELP}")
 
 
-if __name__ == "__main__":                  # 便于 `python -m db_agent.cli` 也给出帮助
+if __name__ == "__main__":
     mod_, tail_ = resolve(sys.argv[1:])
     if mod_ is None:
         print(HELP, end="")

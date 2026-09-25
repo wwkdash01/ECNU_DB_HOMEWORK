@@ -1,10 +1,3 @@
-# gate2_check.py —— 阶段 2 验收（Gate 2）
-# 运行：python -m db_agent gate 2 [--offline]
-#
-# 大部分检查【离线】完成，不需要 API 密钥、不花钱。
-# 唯一发真实 API 调用的是「Gate 2 端到端」一节（1 次调用 + 1 次断点续跑）。
-#
-# 设计：所有检查跑完再汇总，不因单条失败而中断，方便一次看全。
 import json
 import os
 import sqlite3
@@ -36,7 +29,6 @@ def section(title):
 
 
 # ======================================================================
-# 1. db.py
 # ======================================================================
 def check_db():
     section("1. db.py —— 执行层")
@@ -53,10 +45,8 @@ def check_db():
           len(r["rows"]) <= 5 and r["qet"] > 0,
           f"行数={len(r['rows'])}  QET={r['qet']:.6f}s  truncated={r['truncated']}")
 
-    # --- 1b truncated 判定：多取一行才能分辨「正好 N 行」与「被截断」 ---
-    # 注意 SQL 的 LIMIT 必须大于 row_limit，否则永远测不出截断
-    r2 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 4', row_limit=3)   # 4 行 > 3 → 截断
-    r3 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 2', row_limit=3)   # 2 行 < 3 → 未截断
+    r2 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 4', row_limit=3)
+    r3 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 2', row_limit=3)
     check("1b truncated 判定正确",
           r2["truncated"] is True and len(r2["rows"]) == 3
           and r3["truncated"] is False and len(r3["rows"]) <= 2,
@@ -82,8 +72,6 @@ def check_db():
         check("1c 笛卡尔积抛 QueryTimeout", False,
               f"抛了别的异常：{type(e).__name__}: {e}")
 
-    # --- 1d 连续调用不被前一次的过期 deadline 污染（手册未验，本仓库补充）---
-    # set_progress_handler 是连接级的；若 finally 没清干净，第二次查询会一启动就被中断
     try:
         r_first = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 1')
         r_second = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 1')
@@ -95,7 +83,6 @@ def check_db():
         check("1d 连续 3 次查询均正常（进度回调未污染）", False,
               f"{type(e).__name__}: {e}")
 
-    # --- 1e 超时后连接仍可用（finally 清理生效的强证据）---
     try:
         execute(conn, f'SELECT count(*) FROM "{big[0]}" a, "{big[0]}" b, '
                       f'"{big[0]}" c, "{big[0]}" d', timeout=0.5)
@@ -109,7 +96,6 @@ def check_db():
         check("1e 超时之后同一连接仍可查询", False, f"{type(e).__name__}: {e}")
 
     # --- 1f 只读连接：模型生成的写操作必须失败 ---
-    # 构造【语法合法】的写语句，否则报的是语法错而不是 readonly，测不出真东西
     first_col = next(iter(schema_whitelist(db_id)[tbl]))
     wconn = sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
     writes = [
@@ -138,7 +124,6 @@ def check_db():
 
 
 # ======================================================================
-# 2. llm.py
 # ======================================================================
 def check_llm():
     section("2. llm.py —— 抽 SQL（离线）")
@@ -163,17 +148,13 @@ def check_llm():
             ok = got is not None and expect in got
         check(f"2 extract_sql: {label}", ok, f"得到 {got!r}")
 
-    # 关键加固：模型只吐 DDL 时应返回 None，而不是把 DDL 当 SQL 交出去
     check("2 加固：纯 DDL 不当作可判分 SQL",
           extract_sql("CREATE TABLE students (id INT);") is None)
-    # 前导注释不应导致失败：裸文本走兜底正则从第一个 SELECT 起截取（注释被丢掉），
-    # 围栏路径则保留注释；两者都能被 SQLite 正常执行
     r = extract_sql("-- note\nSELECT a FROM t")
     check("2 前导注释场景仍能抽出 SQL",
           r is not None and "SELECT" in r,
           f"{r!r}（裸文本路径丢掉注释后再截取，属预期）")
 
-    # 硬要求：抽出物必须是一条查询，且能被 SQLite 真正执行
     probe = sqlite3.connect(":memory:")
     probe.execute("CREATE TABLE t (a INTEGER)")
     probe.execute("INSERT INTO t VALUES (1)")
@@ -191,7 +172,6 @@ def check_llm():
 
 
 # ======================================================================
-# 3. prompts.py —— 起点冻结
 # ======================================================================
 def check_prompts():
     section("3. prompts.py —— 起点冻结（原则①）")
@@ -215,7 +195,6 @@ def check_prompts():
 
 
 # ======================================================================
-# 4. tools.py
 # ======================================================================
 def check_tools():
     section("4. tools.py —— 工具层")
@@ -232,10 +211,8 @@ def check_tools():
           txt.startswith("执行成功") and qet is not None and qet > 0,
           f"{txt[:90]}…")
 
-    # --- 4b 【关键设计】run_sql 不回完整结果，只给 3 行预览 ---
     check("4b run_sql 不回完整结果（只 3 行预览）",
           "预览" in txt and "预览" in txt)
-    # 更强的证据：用大表确认预览行数不超过 3
     big_tbl = max(schema_whitelist(db_id), key=lambda t: conn.execute(
         f'SELECT COUNT(*) FROM "{t}"').fetchone()[0])
     txt_big, _ = dispatch(conn, db_id, "run_sql", {"sql": f'SELECT * FROM "{big_tbl}"'})
@@ -255,7 +232,6 @@ def check_tools():
     out, _ = dispatch(conn, db_id, "no_such_tool", {})
     check("4g 未知工具名返回友好文本", out.startswith("未知工具"), f"{out!r}")
 
-    # --- 4h A1 工具集冻结守卫（A1 已定稿 63.40%，任何改动都会毁掉可比性）---
     n1 = {t["function"]["name"] for t in tools_for("A1")}
     check("4h A1 工具集 = run_sql + submit_answer（基线冻结）",
           n1 == {"run_sql", "submit_answer"}, f"A1={sorted(n1)}")
@@ -297,7 +273,6 @@ def check_tools():
 
 
 # ======================================================================
-# 5. run.py —— 断点续跑 key
 # ======================================================================
 def check_run_resume():
     section("5. run.py —— 断点续跑 key（本仓库修正）")
@@ -316,7 +291,6 @@ def check_run_resume():
     done = load_done(tmp)
     check("5 断点续跑按 qidx 去重", done == {0, 1, 3}, f"done={sorted(done)}")
 
-    # 用 question_id 会怎样：数据集里 137/138 各出现两次 -> 漏跑 2 题
     qs = load_questions()
     dup = {}
     for q in qs:
@@ -329,7 +303,6 @@ def check_run_resume():
     check("5 确认 question_id 确有重复（故不可用作 key）", bool(dup),
           f"重复值 {dup} → 各下标 {[v for v in dup.values()]}")
 
-    # 用真实数据集模拟：若按 question_id 去重，最终会少几条
     fake_done = set()
     kept_by_qid, kept_by_qidx = [], []
     for q in qs:
@@ -348,7 +321,6 @@ def check_run_resume():
 
 
 # ======================================================================
-# 6. Gate 2 端到端（唯一需要 API 的部分）
 # ======================================================================
 def check_gate2_e2e(limit=1, skip=False):
     section("6. Gate 2 端到端 —— 跑 A1 的 N 条并校验 jsonl 字段")
@@ -360,7 +332,7 @@ def check_gate2_e2e(limit=1, skip=False):
 
     out_path = config.RESULTS_DIR / "A1.jsonl"
     backup = None
-    if out_path.exists():                      # 不破坏已有结果
+    if out_path.exists():
         backup = out_path.read_bytes()
 
     try:

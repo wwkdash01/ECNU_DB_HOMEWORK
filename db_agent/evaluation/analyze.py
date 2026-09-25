@@ -1,21 +1,3 @@
-"""analyze.py —— 阶段 8「报告产出」的离线分析（零 API 成本）
-
-    python -m db_agent analyze                              # 全部指标，含 EX@k
-    python -m db_agent analyze --results-dir results/repro3 # 指定数据目录
-    python -m db_agent analyze --no-exk                     # 跳过 EX@k（快，~10s）
-
-存在理由（手册阶段 7.2 一直要求它，但从未实现）：
-    `score.py` 只判分；`paired.py` 只做配对。报告需要的另外几类产出——
-    **工具调用分布**（"模型会不会用工具"）、**延迟分解**（长尾归因）、
-    **QET 对比**（§1.5 要求 Latency 与 QET 分开报）、**成本**、
-    **`EXPLAIN QUERY PLAN` 分桶**（§3.1 DB 基础问题）、**case study 候选**——
-    此前一份都没有，全是手工临时算的。本脚本把它们固化下来。
-
-★ 为什么 EX@k 要重判（而不是从 `_scored.jsonl` 里读）：
-  `score.py` 只把【最终答案】的 `is_correct` 落盘，逐轮候选的判定没有持久化，
-  所以 `_scored.jsonl` 里没有 EX@k 所需的信息，必须重放候选 SQL 重新判分。
-  这是本脚本唯一"重"的部分（~1 分钟/组），`--no-exk` 可跳过。
-"""
 import argparse
 import json
 import statistics as st
@@ -30,8 +12,6 @@ from db_agent.core.db import execute, QueryTimeout
 
 GROUPS = ("O1", "O3", "A1")
 
-# EX@k 的候选来源必须与 score.py 完全一致，否则曲线对不上：
-#   turn.sql（模型正文作答）+ 该轮 run_sql 参数 + 该轮 submit_answer 参数
 CAND_TOOLS = ("run_sql", "submit_answer")
 
 
@@ -56,7 +36,6 @@ def drop_api_error(recs):
 
 # ---------------------------------------------------------------- 各产出
 def five_metrics(raw, scored, results_dir):
-    """五指标（§1.5）：EX / Latency(P50,P95) / QET / 列级召回 / 幻觉率"""
     n = len(scored)
     ok = sum(r.get("is_correct") or 0 for r in scored)
     lat = sorted(r["latency_total"] for r in raw if r.get("latency_total"))
@@ -83,7 +62,6 @@ def stratified(scored):
 
 
 def tool_distribution(raw):
-    """工具调用分布 —— 回答"模型会不会用工具"（阶段 8 产出表第 5 行）"""
     names = Counter()
     turns_per_q = []
     hits_cap = 0
@@ -109,10 +87,6 @@ def tool_distribution(raw):
 
 
 def latency_decomposition(raw):
-    """延迟分解 —— 长尾归因的前提（§3.3 要求：不能把 API 抖动算到 agent 头上）
-
-    总延迟 = Σ每轮 call_latency + Σ QET + 调度/本地开销
-    """
     tot = {"call": 0.0, "qet": 0.0, "total": 0.0}
     calls = []
     per_q_call = []
@@ -153,11 +127,6 @@ def cost(raw):
 
 
 def qet_probe(scored, db_dir, timeout=2.0, desc="QET 重测"):
-    """QET —— 重新执行每组最终答案，量 SQL 在库上的真实耗时。
-
-    ★ 为什么不用 `turns[].qet`：O 组没有 `run_sql`，该字段为 None，三组不可比。
-      这里对【同一个最终答案】统一重测，才是 §1.5 要求的"Latency 与 QET 分开报"。
-    """
     vals = []
     for r in tqdm(scored, desc=desc, unit="题", ncols=88):
         sql = r.get("final_sql")
@@ -179,7 +148,6 @@ def qet_probe(scored, db_dir, timeout=2.0, desc="QET 重测"):
 
 
 def explain_buckets(scored, db_dir, desc="EXPLAIN 分桶"):
-    """EXPLAIN QUERY PLAN 分桶 —— §3.1「DB 基础问题」的量化依据"""
     feats = Counter()
     n = 0
     for r in tqdm(scored, desc=desc, unit="题", ncols=88):
@@ -210,19 +178,6 @@ def explain_buckets(scored, db_dir, desc="EXPLAIN 分桶"):
 
 
 def exk_curve(results_dir, g, gold, qs, judge):
-    """EX@k：累计 k 轮内答对即算对。
-
-    ★ 语义按组不同，报告里必须区分（score.py 也会打印这句）：
-      A 组 = "迭代到第 k 轮"；O3 = "前 k 个并行候选"；O1 = 单次调用。
-
-    ★ 为什么这是全脚本最慢的一节：它走**官方判分链路**
-      （`func_timeout(30s, execute_sql)`，每次新开 SQLite 连接、且把 gold 也跑一遍），
-      而且要对【每一轮】的每条候选都判一次 —— A1 有 1783 轮，累计约 5000 次判分。
-
-    ★ 判分缓存：key 必须含 gold。**不同题目的 gold 不同**，只按 (sql, db_id) 缓存
-      会把 A 题的判定结果套到 B 题上，是错的。同一题内模型常把同一条 SQL 重跑多轮，
-      缓存正好省掉这部分。
-    """
     raw = load_raw(results_dir, g)
     first_ok = {}
     cache = {}
@@ -252,12 +207,6 @@ def exk_curve(results_dir, g, gold, qs, judge):
                     n_hit += 1
                     ok = cache[key]
                 else:
-                    # ★ score.judge 返回的是元组 (0/1, failure_type)，不是 bool。
-                    #   写成 `if judge(...)` 会【恒为真】（非空元组恒真），必须取 [0]。
-                    #   另外下面那个 break 只能跳出【候选】循环，若不靠 solved 标志
-                    #   跳出【轮次】循环，first_ok 会被后续轮次反复覆盖 —— 两个错误
-                    #   叠加会让每条题都记在"最后一轮"，曲线于是"每组都收敛到 100%"，
-                    #   看着光滑单调，实则完全失真。
                     ok = judge(s, gsql, db_id)[0] == 1
                     cache[key] = ok
                     n_judged += 1
@@ -266,7 +215,7 @@ def exk_curve(results_dir, g, gold, qs, judge):
                     solved = True
                     break
             if solved:
-                break                      # ★ 本题已判对，不再看后续轮次
+                break
         pbar.set_postfix_str(f"实判 {n_judged}  缓存命中 {n_hit}  已判对 {len(first_ok)}")
     pbar.close()
     print(f"  [{g}] 实际判分 {n_judged} 次（缓存命中 {n_hit} 次，省 "
@@ -284,10 +233,6 @@ def exk_curve(results_dir, g, gold, qs, judge):
 
 # ---------------------------------------------------------------- case study
 def case_study_candidates(base_dir, a_name, b_name, qs, gold, limit=3):
-    """挑出 A1 相对基线【救回】和【弄坏】的题，附上题面与两侧最终 SQL。
-
-    只做候选筛选；真正的定性分析要人读结果，脚本不替人下结论。
-    """
     A = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, a_name))}
     B = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, b_name))}
     idx = sorted(set(A) & set(B))
@@ -429,7 +374,6 @@ def main():
     else:
         P("⚠️ **语义按组不同**：A 组 = 「迭代到第 k 轮」；O3 = 「前 k 个并行候选」；O1 = 单次调用。"
           "**不可把两条曲线画在同一张图上直接比。**\n")
-        # 延迟导入：judge 依赖官方评测脚本，放在这里避免 --no-exk 时也付出 import 成本
         sys_path_insert_eval()
         from db_agent.evaluation.score import judge, load_gold, load_questions  # noqa: E402
         gold = load_gold()

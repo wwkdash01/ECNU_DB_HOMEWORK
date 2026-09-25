@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""repro_tui.py —— 复刻流程傻瓜式 TUI（Textual 8.x）
-
-    python -m db_agent tui          # 启动全屏仪表盘
-    python -m db_agent check        # 非交互：打印 9 步状态表后退出（不花钱，给验证/CI 用）
-    printf 'sk-…' | python -m db_agent set-key
-
-（本模块也可直接 `python -m db_agent.tui.repro_tui` 运行，行为相同。）
-
-设计原则（本文件的所有取舍都来自这两条）：
-
-  1. **状态以文件系统为准**。有产物的步骤（数据 / 判分 / 跑组 / 配对）一律靠读文件判断
-     完成度，TUI 自己【不维护进度】—— 所以关掉重开自动接上，run.py 的 qidx 断点续跑
-     也自动生效。只有 gate1 / gate2 这种"跑完什么都不留"的步骤才查 TUI 台账
-     （results/.tui/state.json），台账只是补充，删掉它只会让那两步显示"未运行"。
-  2. **子进程输出必须按 \\r 和 \\n 双分隔**。实测 tqdm 4.70.1 在管道里【不会】自动静默
-     （disable=False 而 stderr_isatty=False），进度条是一串 \\r 刷新的片段。
-     按行读会让整条进度条挤成一行乱码；本文件把 n/total 提出来喂给 ProgressBar。
-
-不修改任何既有脚本，只调用它们。
-"""
 import argparse
 import asyncio
 import importlib
@@ -44,7 +24,7 @@ try:
                                  OptionList, ProgressBar, RichLog,
                                  SelectionList, Static, Switch)
     from textual.widgets.option_list import Option
-except ImportError as e:                                   # pragma: no cover
+except ImportError as e:
     sys.exit(f"缺少依赖：{e}\n请先执行：\n"
              f"  {sys.executable} -m pip install textual==8.2.8 "
              f"-i https://pypi.tuna.tsinghua.edu.cn/simple")
@@ -59,21 +39,18 @@ TUI_DIR   = RESULTS / ".tui"
 LEDGER    = TUI_DIR / "state.json"
 ANALYZE_MD = RESULTS / "analyze.md"
 
-# 密钥备份目录【必须在仓库外】：实测 .env.bak / .env.bak.<ts> / .env_backups/ 都
-# 【不】被 .gitignore 覆盖（只屏蔽了 .env / .env.local / .env.*.local），
-# 备份留在仓库里会被 git add . 连真密钥一起提交。
 BACKUP_DIR = Path.home() / ".db_agent_env_backups"
 KEY_HINT = "sk-"
 
-FULL_ROWS  = 500                 # 全量题数（Mini-Dev V1）
-DB_COUNT   = 11                  # 库数
+FULL_ROWS  = 500
+DB_COUNT   = 11
 SMALL_FILES = ("mini_dev_sqlite.json", "mini_dev_sqlite_gold.sql",
                "mini_dev_sqlite.jsonl", "dev_tables.json")
-GROUP_COST = {"O1": 0.4, "O3": 1.2, "A1": 5.3}          # README 口径（人民币）
+GROUP_COST = {"O1": 0.4, "O3": 1.2, "A1": 5.3}
 GROUP_ORDER = ("O1", "O3", "A1")
 DEPS = ("openai", "sqlglot", "pandas", "tqdm", "textual")
 
-RE_TQDM = re.compile(r"(\d[\d,]*)/(\d[\d,]*)\s*[\[\(]")   # "A1: 45%|####| 225/500 [.."
+RE_TQDM = re.compile(r"(\d[\d,]*)/(\d[\d,]*)\s*[\[\(]")
 
 DONE, PARTIAL, FAIL, TODO, INFO = "done", "partial", "fail", "todo", "info"
 ICON = {DONE: "✓", PARTIAL: "◐", FAIL: "✗", TODO: "○", INFO: "i"}
@@ -85,14 +62,12 @@ class Step:
     key: str
     title: str
     info: str
-    runnable: bool = True        # False = 只做环境检查，没有可执行命令
+    runnable: bool = True
 
 
 STEPS = (
     Step("env",    "环境",      "conda 环境 + 5 个直接依赖", runnable=False),
     Step("secret", "密钥",      ".env 里的 DEEPSEEK_API_KEY（按 d 录入）"),
-    # Gate 0 紧跟密钥：它只依赖 .env，且是唯一花钱的 gate（2 次调用，几分钱）。
-    # 放在"数据"之前，是为了不必先等 1.4 G 下载就能暴露密钥 / tool-calling 问题。
     Step("gate0",  "Gate 0",    "密钥 + tool calling（2 次真实调用，几分钱）"),
     Step("data",   "数据",      "data/dev_databases：11 库 / 11 sqlite"),
     Step("gate1",  "Gate 1",    "数据与起点验收（离线，~15 s）"),
@@ -113,7 +88,6 @@ class Ctx:
 
     @property
     def suffix(self):
-        """冒烟跑写独立文件，避免 --limit 去读全量断点记录导致一题不跑。"""
         return "" if self.limit is None else "_smoke"
 
     def raw(self, g):
@@ -145,12 +119,10 @@ def save_ledger(d):
 
 
 def _mask(key):
-    """密钥掩码。任何要展示密钥的地方都必须过这个函数。"""
     return f"{key[:6]}...{key[-4:]} (len={len(key)})" if len(key) > 12 else "***"
 
 
 def mask_key():
-    """读 .env 里的密钥并返回掩码；不存在/为空返回 None。绝不返回明文。"""
     p = ROOT / ".env"
     if not p.exists():
         return None
@@ -169,12 +141,6 @@ def mask_key():
 
 
 def _gitignored(path):
-    """判断把密钥写到 path 有没有被 git 提交的风险。返回 (safe, reason)。
-
-    四种情形分开处理，绝不把「无法确认」与「确认未屏蔽」混为一谈
-    —— 旧实现把两者都当 False，导致 ZIP 下载的副本（没有 .git）被误拒：
-    `git check-ignore` 在非仓库里返回 128，被误读成"未屏蔽"。
-    """
     try:
         rel = Path(path).resolve().relative_to(ROOT.resolve()).as_posix()
     except ValueError:
@@ -199,14 +165,6 @@ def _gitignored(path):
 
 
 def write_env_key(key, env_path=None, backup_dir=None):
-    """把密钥写进 .env。返回 (ok, message, backup_path)。
-
-    message 只含掩码 —— 硬约束，调用方拿不到明文。
-    三道保险：
-      ① 仓库内的文件必须先被 .gitignore 屏蔽，否则【拒绝写入】；
-      ② 旧文件备份到仓库外（实测 .env.bak* 不被 gitignore 覆盖）；
-      ③ 同目录临时文件 + chmod 600 + os.replace 原子替换。
-    """
     key = (key or "").strip()
     if not key:
         return False, "密钥为空，未写入。", None
@@ -216,7 +174,7 @@ def write_env_key(key, env_path=None, backup_dir=None):
     safe, why = _gitignored(env_path)
     if not safe:
         return False, f"拒绝写入：{why}。", None
-    guard_note = "" if "屏蔽" in why else f"（{why}）"   # 守卫被跳过时显式告知
+    guard_note = "" if "屏蔽" in why else f"（{why}）"
 
     old = ""
     if env_path.exists():
@@ -280,7 +238,6 @@ def pairs_of(groups):
 
 # ---------------------------------------------------------------- 状态推导
 def detect(ctx: Ctx):
-    """返回 {step_key: (state, detail)}。纯读文件系统 + 台账，无副作用。"""
     led = load_ledger()
     st = {}
 
@@ -307,7 +264,6 @@ def detect(ctx: Ctx):
         st["data"] = (PARTIAL, f"{len(dirs)} 库 / {len(sqlites)} sqlite"
                               + (f" / 缺 {missf}" if missf else ""))
 
-    # --- Gate 0 / 1 / 2：跑完不留产物，只能靠台账 ---
     def gate(key, extra=""):
         rec = led.get(key)
         if not rec:
@@ -361,7 +317,6 @@ def detect(ctx: Ctx):
 
 # ---------------------------------------------------------------- 命令构造
 def build_job(step: Step, ctx: Ctx):
-    """返回 [(argv, tee_path|None), ...]；空列表 = 该步骤无需执行命令。"""
     k = step.key
     if k == "data":
         return [([PY, "-m", "db_agent", "fetch"], None)]
@@ -394,7 +349,6 @@ def build_job(step: Step, ctx: Ctx):
 
 
 def cost_of(step: Step, ctx: Ctx):
-    """跑组步骤的预计成本。冒烟按题数比例折算，不显示成 ¥0.00。"""
     if step.key != "run":
         return 0.0
     ratio = (ctx.limit / FULL_ROWS) if ctx.limit else 1.0
@@ -406,7 +360,6 @@ def yuan(v):
 
 
 def explain(step: Step, ctx: Ctx, state):
-    """环境/密钥这类无命令步骤的说明文案。"""
     if step.key == "env":
         miss = missing_deps()
         if not miss:
@@ -427,7 +380,6 @@ def explain(step: Step, ctx: Ctx, state):
 
 # ---------------------------------------------------------------- 子进程
 class Child:
-    """流式跑一个子进程。按 \\r 与 \\n 双分隔交付每一段文本。"""
 
     def __init__(self, argv, tee=None):
         self.argv = argv
@@ -450,7 +402,7 @@ class Child:
                 if not chunk:
                     break
                 buf += chunk.decode("utf-8", "replace")
-                pieces = re.split(r"[\r\n]", buf)   # ← tqdm 的 \r 必须一起切
+                pieces = re.split(r"[\r\n]", buf)
                 buf = pieces.pop()
                 for p in pieces:
                     if p.strip():
@@ -512,11 +464,6 @@ class Confirm(ModalScreen):
 
 # ---------------------------------------------------------------- 密钥录入
 class KeyScreen(ModalScreen):
-    """录入 DEEPSEEK_API_KEY 的弹窗。
-
-    按用户要求用【明文】输入（Input 未开 password）：粘贴时屏幕上可见。
-    但日志、返回值、台账一律只走掩码 —— 明文只存在于这一屏。
-    """
     CSS = """
     KeyScreen { align: center middle; }
     #kbox { width: 76; height: auto; border: thick $accent; background: $surface; padding: 1 2; }
@@ -694,11 +641,9 @@ class ReproApp(App):
                 f"[{COLOR[state]}]{ICON[state]}[/] {i} {s.title:<10} "
                 f"[{COLOR[state]}]{detail}[/]",
                 id=s.key))
-        # 恢复高亮
         keys = [s.key for s in STEPS]
         if self._highlight in keys:
             ol.highlighted = keys.index(self._highlight)
-        # 进度条随「跑组」行数走
         if self.ctx.groups:
             rows = sum(count_lines(self.ctx.raw(g)) for g in self.ctx.groups)
             total = (self.ctx.limit or FULL_ROWS) * len(self.ctx.groups)
@@ -715,7 +660,6 @@ class ReproApp(App):
         self._highlight = e.option.id or self._highlight
 
     def on_option_list_option_selected(self, e):
-        """点选只作展示，不自动执行 —— 避免误点花钱的步骤。"""
         self._highlight = e.option.id or self._highlight
         step = self.highlighted_step()
         state, detail = detect(self.current_ctx())[step.key]
@@ -744,7 +688,7 @@ class ReproApp(App):
         ctx = self.current_ctx()
         self.ctx = ctx
 
-        if step.key == "secret":              # 录入密钥：开弹窗，不走子进程
+        if step.key == "secret":
             note = ""
             if os.environ.get(config.API_KEY_ENV):
                 note = (f"系统环境变量里已有 {config.API_KEY_ENV}，而 config 加载时"
@@ -810,7 +754,6 @@ class ReproApp(App):
             self.set_busy(False)
             self.query_one("#bar", ProgressBar).update(total=None, progress=0)
 
-        # 台账（gate 类步骤的唯一事实源）
         led = load_ledger()
         led[step.key] = {"code": rc_all, "at": time.strftime("%m-%d %H:%M"),
                          "cmd": " ".join(job[-1][0]), "mode":
@@ -830,7 +773,7 @@ class ReproApp(App):
                 cur = tot = 0
             if tot > 0:
                 self.query_one("#bar", ProgressBar).update(total=tot, progress=min(cur, tot))
-                return                      # 进度片段不刷进日志，避免糊屏
+                return
         self.log_write(text)
 
     def action_stop(self):
@@ -847,7 +790,6 @@ class ReproApp(App):
             self.log_write("[red]子进程未响应 TERM，已 KILL。[/]")
 
 
-# ---------------------------------------------------------------- --check
 def run_check() -> int:
     ctx = Ctx(groups=GROUP_ORDER, concurrency=20, limit=None, gate2_full=False)
     st = detect(ctx)

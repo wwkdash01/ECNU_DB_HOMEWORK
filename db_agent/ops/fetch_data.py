@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""fetch_data.py —— BIRD Mini-Dev (SQLite) 数据集：下载 → 解压 → 摆正 → 清理
-
-    python -m db_agent fetch                  # data/dev_databases 不完整就下载并摆正
-    python -m db_agent fetch --keep-zip       # 保留下载的 zip
-    python -m db_agent fetch --force          # 目标已完整时也重建
-    python -m db_agent fetch --redownload     # 忽略本地已有 zip，从头下载
-
-本文件实测过的四个前提（写法全部围着它们转）：
-
-  1. zip 内部【只有一个顶层目录 minidev/】，SQLite 版在 minidev/MINIDEV/ 下。
-     解压后比预期多一层，不能直接摊到 data/ —— config.DB_DIR 写死要求
-     dev_databases 直接躺在 data/ 下。
-  2. 只解 minidev/MINIDEV/dev_databases/** 与 3 个 SQLite 小文件：
-     minidev/MINIDEV_mysql/BIRD_dev.sql (995 M) 与
-     minidev/MINIDEV_postgresql/BIRD_dev.sql (955 M) 本项目完全不用，
-     选择性解压让这 1.95 GB【根本不落盘】。
-  3. 先解到 data/.fetch_tmp/ 再 os.rename 到 data/dev_databases：
-     同卷重命名是瞬时操作，目标目录不会出现半成品，也不额外占 1.4 G。
-  4. 删除白名单：只删 data/.fetch_tmp、data/dev_databases 下的 .DS_Store、
-     以及本脚本使用的 zip。不做任何通配删除。
-"""
 import argparse
 import hashlib
 import os
@@ -36,20 +15,18 @@ except ImportError:
     sys.exit("缺少依赖 tqdm。请先执行：\n"
              "  ~/.conda/envs/db_agent/bin/python -m pip install tqdm")
 
-from db_agent import config          # 复用 ROOT / DATA_DIR / DB_DIR，避免路径口径分裂
+from db_agent import config
 
 URL = "https://bird-bench.oss-cn-beijing.aliyuncs.com/minidev.zip"
 DEFAULT_ZIP = Path.home() / "Downloads" / "minidev.zip"
-EXPECTED_BYTES = 800_943_648            # 实测 764 MiB（用于下载校验 + 本地复用判定）
-ZIP_PREFIX = "minidev/MINIDEV/"         # zip 内 SQLite 版的路径前缀
+EXPECTED_BYTES = 800_943_648
+ZIP_PREFIX = "minidev/MINIDEV/"
 TMP_NAME = ".fetch_tmp"
-CHUNK = 1 << 20                         # 1 MiB
-DB_COUNT = 11                           # Mini-Dev V1：11 库
+CHUNK = 1 << 20
+DB_COUNT = 11
 
-# data/ 下必须齐全的 4 个小文件（.jsonl 不在 zip 内，由仓库版本化提供）
 REQUIRED_SMALL = ("mini_dev_sqlite.json", "mini_dev_sqlite_gold.sql",
                   "mini_dev_sqlite.jsonl", "dev_tables.json")
-# 其中能从 zip 里取到的 3 个
 FROM_ZIP_SMALL = ("mini_dev_sqlite.json", "mini_dev_sqlite_gold.sql",
                   "dev_tables.json")
 
@@ -60,7 +37,6 @@ def mib(n):
 
 # ---------------------------------------------------------------- 目标状态
 def target_state():
-    """返回 (是否完整, 库目录列表, sqlite 列表, 缺失的小文件)。"""
     db = config.DB_DIR
     if db.exists():
         dirs = sorted(d.name for d in db.iterdir() if d.is_dir())
@@ -136,7 +112,6 @@ def download(url, dest, expected, redownload=False):
 
 # ---------------------------------------------------------------- 选择性解压
 def _wanted(name):
-    """只收 dev_databases/** 与 3 个 SQLite 小文件。"""
     if not name.startswith(ZIP_PREFIX):
         return False
     rel = name[len(ZIP_PREFIX):]
@@ -146,7 +121,6 @@ def _wanted(name):
 
 
 def _safe_rel(rel):
-    """zip-slip 防护：拒绝绝对路径与上跳。"""
     if rel.startswith("/") or ".." in Path(rel).parts:
         raise RuntimeError(f"zip 内出现非法路径，已拒绝：{rel}")
     return rel
@@ -204,11 +178,11 @@ def install(tmp_root):
         aside = config.DATA_DIR / (TMP_NAME + "_old")
         if aside.exists():
             shutil.rmtree(aside)
-        os.rename(dst, aside)              # 先挪开，命名冲突时不至于丢数据
+        os.rename(dst, aside)
         try:
-            os.rename(src, dst)            # 同卷重命名，瞬时
+            os.rename(src, dst)
         except Exception:
-            os.rename(aside, dst)          # 回滚
+            os.rename(aside, dst)
             raise
         shutil.rmtree(aside)
         print(f"[替换] {dst}（旧目录已删除）")
@@ -233,7 +207,6 @@ def install(tmp_root):
 
 # ---------------------------------------------------------------- 清理
 def cleanup(tmp_root, zip_path, keep_zip):
-    """只删白名单内的东西：临时目录、.DS_Store、zip。"""
     root = config.ROOT.resolve()
     tmp = tmp_root.resolve()
     if tmp != root and root in tmp.parents:

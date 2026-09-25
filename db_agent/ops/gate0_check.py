@@ -1,5 +1,3 @@
-# gate0_check.py —— 阶段 0 验收
-
 import sqlite3, sys, json
 from openai import OpenAI
 from db_agent import config
@@ -25,17 +23,14 @@ def main():
 
     assert sqlite3.sqlite_version_info >= (3, 41), "SQLite version should >= 3.41"
 
-    # ---------- ② 密钥必须来自项目级配置（而不是依赖 shell 导出）----------
     key = config.require_api_key()
     print(f"\n[{config.API_KEY_ENV}] 来源={config.ENV_SOURCE}  值={mask(key)}")
     assert config.ENV_SOURCE != "none", "API KEY not found, plz check .env"
 
     c = OpenAI(api_key=key, base_url=config.BASE_URL)
 
-    # 思考模式忽略 temperature，必须显式关闭后再断言温度生效
     extra = {"thinking": config.THINKING}
 
-    # ---------- ③ usage 分项字段（cache 两项拿不到 → 成本分项补不回来）----------
     r = c.chat.completions.create(
         model=config.MODEL, temperature=0,
         max_tokens=64,
@@ -45,7 +40,6 @@ def main():
     fields = list(r.usage.model_dump().keys())
     print("\nusage 字段:", fields)
 
-    # ---------- ④ tool calling —— 整个 A 组的地基 ----------
     r2 = c.chat.completions.create(
         model=config.MODEL, temperature=0,
         max_tokens=256,
