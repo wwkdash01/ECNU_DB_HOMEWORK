@@ -15,7 +15,6 @@ GROUPS = ("O1", "O3", "A1")
 CAND_TOOLS = ("run_sql", "submit_answer")
 
 
-# ---------------------------------------------------------------- 读数据
 def load_raw(results_dir, g):
     p = Path(results_dir) / f"{g}.jsonl"
     if not p.exists():
@@ -34,7 +33,6 @@ def drop_api_error(recs):
     return [r for r in recs if r.get("failure_type") != "api_error"]
 
 
-# ---------------------------------------------------------------- 各产出
 def five_metrics(raw, scored, results_dir):
     n = len(scored)
     ok = sum(r.get("is_correct") or 0 for r in scored)
@@ -231,7 +229,6 @@ def exk_curve(results_dir, g, gold, qs, judge):
     return n, curve
 
 
-# ---------------------------------------------------------------- case study
 def case_study_candidates(base_dir, a_name, b_name, qs, gold, limit=3):
     A = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, a_name))}
     B = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, b_name))}
@@ -254,7 +251,6 @@ def case_study_candidates(base_dir, a_name, b_name, qs, gold, limit=3):
     return saved[:limit], broke[:limit], len(saved), len(broke)
 
 
-# ---------------------------------------------------------------- 输出
 def fmt_pct(x):
     return "—" if x is None else f"{x * 100:.2f}%"
 
@@ -286,7 +282,6 @@ def main():
         raise SystemExit(f"{rd} 下没有任何 <group>.jsonl / _scored.jsonl")
     P(f"可用组：{', '.join(have)}\n")
 
-    # ---- 1. 五指标 ----
     P("## 1. 五指标对比（§1.5）\n")
     P("| 指标 | " + " | ".join(have) + " |")
     P("|---" * (len(have) + 1) + "|")
@@ -304,7 +299,6 @@ def main():
     for g in have:
         P(f"- `{g}`：{m[g]['failure_type']}")
 
-    # ---- 2. 分层 EX ----
     P("\n## 2. 分层 EX\n")
     P("| 难度 | n | " + " | ".join(have) + " |")
     P("|---" * (len(have) + 2) + "|")
@@ -316,7 +310,6 @@ def main():
         P(f"| {d} | {max(ns.values())} | "
           + " | ".join(fmt_pct(exs[g]) for g in have) + " |")
 
-    # ---- 3. QET ----
     P("\n## 3. QET（§1.5 要求与 Latency 分开报）\n")
     P("统一重测各组【最终答案】在库上的执行耗时（2 s 超时），三组同口径可比。\n")
     P("| 组 | 可测题数 | P50 (ms) | P95 (ms) | 均值 (ms) |")
@@ -326,7 +319,6 @@ def main():
         if q:
             P(f"| {g} | {q['n']} | {q['P50']*1000:.2f} | {q['P95']*1000:.2f} | {q['均值']*1000:.2f} |")
 
-    # ---- 4. 延迟分解 ----
     P("\n## 4. 延迟分解（长尾归因的前提，§3.3）\n")
     P("| 组 | Σ总延迟 (s) | Σcall_latency | ΣQET | Σ调度开销 | 单次调用 P50 | 单次调用 P95 | 调用次数 |")
     P("|---|---|---|---|---|---|---|---|")
@@ -337,7 +329,6 @@ def main():
     P("\n> **读法**：若 P95 的抬升主要来自「单次调用」而非「轮数」，"
       "则结论须写成「agent 放大了 API 固有长尾」，而不是「agent 本身慢」。")
 
-    # ---- 5. 成本 ----
     P("\n## 5. 成本（token 事实，绝对金额按当期单价换算）\n")
     P("| 组 | 调用 | 输入 | 缓存命中 | 缓存未命中输入 | 输出 | 调用/题 |")
     P("|---|---|---|---|---|---|---|")
@@ -346,7 +337,6 @@ def main():
         P(f"| {g} | {c['调用']} | {c['输入']:,} | {c['缓存命中']:,} | "
           f"{c['缓存未命中输入']:,} | {c['输出']:,} | {c['调用']/len(raw[g]):.2f} |")
 
-    # ---- 6. 工具调用分布 ----
     P("\n## 6. 工具调用分布（\"模型会不会用工具\"）\n")
     for g in have:
         t = tool_distribution(raw[g])
@@ -355,7 +345,6 @@ def main():
         P(f"- `final_sql_source`：{t['final_sql_source']}")
         P(f"- submit 尝试次数分布：{t['submit 尝试次数分布']}\n")
 
-    # ---- 7. EXPLAIN 分桶 ----
     P("\n## 7. `EXPLAIN QUERY PLAN` 分桶（§3.1 DB 基础问题）\n")
     P("| 组 | 可解析 | " + " | ".join(["含 SCAN", "含 SEARCH", "含 TEMP B-TREE", "含 COVERING INDEX", "含子查询"]) + " |")
     P("|---" * 7 + "|")
@@ -367,7 +356,6 @@ def main():
     P("\n> ⚠️ SQLite 只有 B-tree、无原生 Hash 索引，清单里的「B+树 vs Hash」在 SQLite 侧做不了，"
       "作为报告局限性写明即可。")
 
-    # ---- 8. EX@k ----
     P("\n## 8. EX@k 曲线\n")
     if a.no_exk:
         P("（本次以 `--no-exk` 跳过。EX@k 需重放每轮候选并重新判分，约 1 分钟/组。）")
@@ -389,7 +377,6 @@ def main():
                 cells.append(f"{cur[i][2]*100:.2f}% (+{cur[i][3]})" if i < len(cur) else "—")
             P(f"| {i+1} | " + " | ".join(cells) + " |")
 
-    # ---- 9. case study 候选 ----
     P("\n## 9. case study 候选\n")
     if "A1" in have and "O1" in have:
         import_score_helpers = None

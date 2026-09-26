@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import hashlib
 import os
@@ -12,8 +11,7 @@ from pathlib import Path
 try:
     from tqdm import tqdm
 except ImportError:
-    sys.exit("缺少依赖 tqdm。请先执行：\n"
-             "  ~/.conda/envs/db_agent/bin/python -m pip install tqdm")
+    sys.exit("缺少依赖 tqdm")
 
 from db_agent import config
 
@@ -35,7 +33,6 @@ def mib(n):
     return f"{n / 1024 / 1024:.1f} MiB"
 
 
-# ---------------------------------------------------------------- 目标状态
 def target_state():
     db = config.DB_DIR
     if db.exists():
@@ -58,7 +55,6 @@ def report_state():
     return ok
 
 
-# ---------------------------------------------------------------- 下载
 def download(url, dest, expected, redownload=False):
     dest = Path(dest).expanduser()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +106,6 @@ def download(url, dest, expected, redownload=False):
     return dest
 
 
-# ---------------------------------------------------------------- 选择性解压
 def _wanted(name):
     if not name.startswith(ZIP_PREFIX):
         return False
@@ -158,7 +153,6 @@ def extract_selected(zip_path, tmp_root):
     return tmp_root
 
 
-# ---------------------------------------------------------------- 摆正
 def _sha256(p):
     h = hashlib.sha256()
     with open(p, "rb") as f:
@@ -205,7 +199,6 @@ def install(tmp_root):
             print(f"[缺失] {f}：不在 zip 内且仓库里也没有，请检查 clone 是否完整")
 
 
-# ---------------------------------------------------------------- 清理
 def cleanup(tmp_root, zip_path, keep_zip):
     root = config.ROOT.resolve()
     tmp = tmp_root.resolve()
@@ -232,7 +225,6 @@ def cleanup(tmp_root, zip_path, keep_zip):
         print(f"[清理] {zp}（释放 {mib(size)}）")
 
 
-# ---------------------------------------------------------------- 自检
 def self_check():
     print("=" * 68)
     print("[自检] 目标结构")

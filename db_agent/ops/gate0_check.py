@@ -8,7 +8,6 @@ def mask(k):
 
 
 def main():
-    # ---------- ① 环境落盘 ----------
     dev = {
         "python": sys.version,
         "sqlite": sqlite3.sqlite_version,
@@ -55,7 +54,6 @@ def main():
     print("content:", repr(m.content)[:120])
     print("tool_calls:", tc)
 
-    # ---------- Gate 0 判定 ----------
     print("\n===== Gate 0 =====")
     ok_cache = all(k in fields for k in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"))
     ok_tool = bool(tc) and tc[0].function.name == "run_sql"

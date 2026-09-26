@@ -21,7 +21,6 @@ def main():
     print("Gate 1 · 阶段 1 验收")
     print("=" * 72)
 
-    # ---------------------------------------------------------------- 数据文件
     print("\n--- 前置：数据文件 ---")
     for f, label in ((config.QUESTIONS_FILE, "questions json"),
                      (config.GOLD_FILE, "gold sql"),
@@ -33,7 +32,6 @@ def main():
     n = len(qs)
     dbs = sorted({q["db_id"] for q in qs})
 
-    # ------------------------------------------------- 标准 1：题目数与 db_id 列表
     print("\n--- 标准 1：题目数与 db_id 列表 ---")
     check("题目数 > 0", n > 0, f"n = {n}")
     check("db_id 数 > 0", len(dbs) > 0, f"{len(dbs)} 个库")
@@ -42,7 +40,6 @@ def main():
           f"→ 判定为 {'V1（500 题）' if n == 500 else 'V2（780 题）' if n == 780 else '未知版本'}")
     print(f"       {dbs}")
 
-    # ------------------------------------------------- 标准 2：build_context 确定性
     print("\n--- 标准 2：build_context 确定性 ---")
     ok_all = True
     for q in tqdm(qs, desc="build_context 确定性", unit="题", ncols=88):
@@ -57,7 +54,6 @@ def main():
     q0 = qs[0]
     ctx = build_context(q0["db_id"], q0.get("evidence"))
 
-    # ------------------------------------------------- 标准 3：schema 内容与 evidence
     print("\n--- 标准 3：schema 拼装与 evidence ---")
     check("context 含 'Database schema:' 段", "Database schema:" in ctx)
     check("context 含 'External knowledge:' 段", "External knowledge:" in ctx)
@@ -85,7 +81,6 @@ def main():
     n_ev_empty = len(empty_qs)
     print(f"       evidence 为空：{n_ev_empty}/{n}（空则 build_context 填 'None'）")
 
-    # ------------------------------------------------- 标准 4：schema_whitelist
     print("\n--- 标准 4：schema_whitelist ---")
     zero = [d for d in dbs if len(schema_whitelist(d)) == 0]
     check("所有库表数 > 0", not zero, f"表数为 0 的库：{zero if zero else '无'}")
@@ -95,7 +90,6 @@ def main():
         print(f"         {d:28} {len(schema_whitelist(d)):3} 表")
     print(f"       合计 {total_tables} 表")
 
-    # ------------------------------------------- 补充（本项目实测发现的坑，需回归）
     print("\n--- 补充 A：11 个库的文件都存在且可读 ---")
     missing, unreadable = [], []
     for d in dbs:
@@ -112,7 +106,6 @@ def main():
     check("库文件齐全", not missing, f"缺失：{missing if missing else '无'}")
     check("库文件可读", not unreadable, f"不可读：{unreadable if unreadable else '无'}")
 
-    # ------------------------------------------------- 补充 C：gold 与 JSON 对齐
     print("\n--- 补充 C：JSON[i] 与 gold 第 i 行对齐（score.py 按下标取 gold 的前提）---")
     gold = [l.rstrip("\n") for l in open(config.GOLD_FILE, encoding="utf-8") if l.strip()]
     check("gold 行数 == 题目数", len(gold) == n, f"gold {len(gold)} 行 vs 题目 {n}")
@@ -137,7 +130,6 @@ def main():
     print(f"       ⚠️ question_id 重复值：{dup if dup else '无'}")
     print(f"       → 故断点续跑必须用 qidx，不能用 question_id")
 
-    # ---------------------------------------------------------------- 汇总
     print("\n" + "=" * 72)
     failed = [(nm, dt) for nm, ok, dt in RESULTS if not ok]
     print(f"汇总：{len(RESULTS) - len(failed)}/{len(RESULTS)} 通过")

@@ -28,8 +28,6 @@ def section(title):
     print("-" * 68)
 
 
-# ======================================================================
-# ======================================================================
 def check_db():
     section("1. db.py —— 执行层")
     from db_agent.core.db import execute, QueryTimeout
@@ -39,7 +37,6 @@ def check_db():
     conn = get_conn(db_id)
     tbl = next(iter(schema_whitelist(db_id)))
 
-    # --- 1a 正常查询：行数 + 正的 QET ---
     r = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 5')
     check("1a 正常查询返回行数与正的 QET",
           len(r["rows"]) <= 5 and r["qet"] > 0,
@@ -53,7 +50,6 @@ def check_db():
           f"LIMIT 4/row_limit 3 → truncated={r2['truncated']} 返回 {len(r2['rows'])} 行\n"
           f"       LIMIT 2/row_limit 3 → truncated={r3['truncated']} 返回 {len(r3['rows'])} 行")
 
-    # --- 1c 笛卡尔积触发 QueryTimeout ---
     big = None
     for t in sorted(schema_whitelist(db_id)):
         n = conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
@@ -95,7 +91,6 @@ def check_db():
     except Exception as e:
         check("1e 超时之后同一连接仍可查询", False, f"{type(e).__name__}: {e}")
 
-    # --- 1f 只读连接：模型生成的写操作必须失败 ---
     first_col = next(iter(schema_whitelist(db_id)[tbl]))
     wconn = sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
     writes = [
@@ -123,8 +118,6 @@ def check_db():
     conn.close()
 
 
-# ======================================================================
-# ======================================================================
 def check_llm():
     section("2. llm.py —— 抽 SQL（离线）")
     from db_agent.core.llm import extract_sql
@@ -171,8 +164,6 @@ def check_llm():
     probe.close()
 
 
-# ======================================================================
-# ======================================================================
 def check_prompts():
     section("3. prompts.py —— 起点冻结（原则①）")
     from db_agent.experiment.prompts import oneshot_prompt, agent_system
@@ -194,8 +185,6 @@ def check_prompts():
     check("3 O 含问题原文", q0["question"] in o)
 
 
-# ======================================================================
-# ======================================================================
 def check_tools():
     section("4. tools.py —— 工具层")
     from db_agent.experiment.tools import dispatch, tools_for, TOOLS, SUBMIT_TOOL
@@ -205,7 +194,6 @@ def check_tools():
     conn = get_conn(db_id)
     tbl = next(t for t, c in schema_whitelist(db_id).items() if c)
 
-    # --- 4a run_sql 成功 ---
     txt, qet = dispatch(conn, db_id, "run_sql", {"sql": f'SELECT * FROM "{tbl}" LIMIT 3'})
     check("4a run_sql 成功返回文本 + QET",
           txt.startswith("执行成功") and qet is not None and qet > 0,
@@ -219,7 +207,6 @@ def check_tools():
     check("4b run_sql 预览不含完整数据", "结果被截断" in txt_big,
           f"{big_tbl}: {txt_big[:100]}…")
 
-    # --- 4c 错误返回友好字符串而非异常 ---
     try:
         out, _ = dispatch(conn, db_id, "run_sql", {"sql": "SELECT * FROM nope"})
         check("4c run_sql 错误入参返回友好文本", out.startswith("执行失败"),
@@ -228,7 +215,6 @@ def check_tools():
         check("4c run_sql 错误入参返回友好文本", False,
               f"抛了异常：{type(e).__name__}: {e}")
 
-    # --- 4g 未知工具名 ---
     out, _ = dispatch(conn, db_id, "no_such_tool", {})
     check("4g 未知工具名返回友好文本", out.startswith("未知工具"), f"{out!r}")
 
@@ -240,7 +226,6 @@ def check_tools():
           f"{[t['function']['name'] for t in tools_for('A1')]}")
     check("4h tools_for 对 O 组返回 None", tools_for("O1") is None)
 
-    # --- 4h1 A1 prompt 基线冻结 ---
     from db_agent.experiment.prompts import agent_system
     a1p = agent_system("CTX")
     check("4h1 A1 prompt 含输出形态自检（唯一显著增益机制，不得删改）",
@@ -272,8 +257,6 @@ def check_tools():
           and SUBMIT_TOOL["function"]["parameters"]["required"] == ["sql"])
 
 
-# ======================================================================
-# ======================================================================
 def check_run_resume():
     section("5. run.py —— 断点续跑 key（本仓库修正）")
     from db_agent.experiment.run import load_done
@@ -320,8 +303,6 @@ def check_run_resume():
     tmp.unlink(missing_ok=True)
 
 
-# ======================================================================
-# ======================================================================
 def check_gate2_e2e(limit=1, skip=False):
     section("6. Gate 2 端到端 —— 跑 A1 的 N 条并校验 jsonl 字段")
     from db_agent.experiment.run import main as run_main, load_done
@@ -367,7 +348,6 @@ def check_gate2_e2e(limit=1, skip=False):
         print(f"       本轮工具调用：{tools_used or '（无）'}")
         print(f"       final_sql: {str(r.get('final_sql'))[:100]}")
 
-        # --- 断点续跑 ---
         done = load_done(out_path)
         qs = load_questions()[:limit]
         todo = [q for q in qs if q["qidx"] not in done]
@@ -381,7 +361,6 @@ def check_gate2_e2e(limit=1, skip=False):
             print(f"       已还原原有 {out_path.name}")
 
 
-# ======================================================================
 def main():
     offline = "--offline" in sys.argv
     print("=" * 68)

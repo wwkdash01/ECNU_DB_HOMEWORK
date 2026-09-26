@@ -1,8 +1,3 @@
-"""paired.py —— 两组实验的配对比较（McNemar 精确检验）
-
-用法：
-    python -m db_agent pair O1_scored.jsonl A1_scored.jsonl
-"""
 import json
 import sys
 from collections import Counter
@@ -12,6 +7,11 @@ from pathlib import Path
 from db_agent import config
 
 RESULTS = config.RESULTS_DIR
+
+USAGE = """paired.py —— 两组实验的配对比较（McNemar 精确检验）
+
+用法：
+    python -m db_agent pair O1_scored.jsonl A1_scored.jsonl"""
 
 
 def load(name):
@@ -107,5 +107,5 @@ def main(name_a, name_b, label_a=None, label_b=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        raise SystemExit(__doc__)
+        raise SystemExit(USAGE)
     main(*sys.argv[1:3])

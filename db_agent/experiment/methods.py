@@ -14,7 +14,6 @@ def _blank():
             "final_sql_source": None, "submitted": False, "submit_attempts": 0}
 
 
-# ---------------------------------------------------------------- O1
 def run_oneshot(context, question, db_id, temperature):
     r = _blank()
     msg, meta = chat([{"role": "user", "content": oneshot_prompt(context, question)}],
@@ -26,7 +25,6 @@ def run_oneshot(context, question, db_id, temperature):
     return r
 
 
-# ---------------------------------------------------------------- O3
 def _exec_hash(conn, sql):
     res = set(map(tuple, execute(conn, sql)["rows"]))
     return hash(frozenset(res))
@@ -73,8 +71,6 @@ def run_selfconsistency(context, question, db_id, temperature):
     conn.close()
     return r
 
-
-# ---------------------------------------------------------------- A1
 
 def _rejected(r, db_id):
     if not config.FALLBACK_TO_LAST_EXECUTED:

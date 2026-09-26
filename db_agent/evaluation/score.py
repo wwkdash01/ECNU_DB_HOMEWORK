@@ -66,7 +66,6 @@ def o3_mechanism_health(recs):
         for e in (r.get("exec_errors") or []):
             errs["ok" if e is None else str(e).split(":")[0]] += 1
 
-    # ---------------- 静态层：确定性的根因检查 ----------------
     static = [
         ("思考模式已关闭（否则 temperature 静默失效）",
          config.THINKING.get("type") == "disabled", f"THINKING={config.THINKING}"),
@@ -83,7 +82,6 @@ def o3_mechanism_health(recs):
         print("      ⚠ 静态层未通过：O3 的机制前提不成立，")
         print("        本次 EX 不能当作「采样投票」的效果来解读。")
 
-    # ---------------- 数据层：只报告，不下结论 ----------------
     print("    [数据层 · 只报告，无归档基准]")
     print(f"      记录 {n}   候选数不足 {k} 的题 {short}   无候选 {no_cand}")
     print(f"      三次候选全同 : {same:4d} ({same / n:6.1%})"
@@ -172,7 +170,6 @@ def main(group, out=None):
         for r in recs:
             f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
 
-    # ---------------- 汇总 ----------------
     n = len(recs)
     print(f"\n===== {group}  n={n} =====")
     if n == 0:

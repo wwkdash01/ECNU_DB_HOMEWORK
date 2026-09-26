@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import asyncio
 import importlib
@@ -13,7 +12,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-# ---------------------------------------------------------------- 依赖自检
 try:
     from textual import work
     from textual.app import App, ComposeResult
@@ -24,14 +22,13 @@ try:
                                  OptionList, ProgressBar, RichLog,
                                  SelectionList, Static, Switch)
     from textual.widgets.option_list import Option
-except ImportError as e:
+except ImportError as e:                                   # pragma: no cover
     sys.exit(f"缺少依赖：{e}\n请先执行：\n"
              f"  {sys.executable} -m pip install textual==8.2.8 "
              f"-i https://pypi.tuna.tsinghua.edu.cn/simple")
 
 from db_agent import config
 
-# ---------------------------------------------------------------- 常量
 ROOT      = config.ROOT
 PY        = sys.executable
 RESULTS   = config.RESULTS_DIR
@@ -78,7 +75,6 @@ STEPS = (
 )
 
 
-# ---------------------------------------------------------------- 上下文
 @dataclass
 class Ctx:
     groups: tuple = GROUP_ORDER
@@ -97,7 +93,6 @@ class Ctx:
         return RESULTS / f"{g}{self.suffix}_scored.jsonl"
 
 
-# ---------------------------------------------------------------- 工具
 def count_lines(p):
     try:
         with open(p, "rb") as f:
@@ -236,22 +231,18 @@ def pairs_of(groups):
     return [(gs[i], gs[j]) for i in range(len(gs)) for j in range(i + 1, len(gs))]
 
 
-# ---------------------------------------------------------------- 状态推导
 def detect(ctx: Ctx):
     led = load_ledger()
     st = {}
 
-    # --- 环境 ---
     miss = missing_deps()
     st["env"] = ((DONE, f"{sys.version.split()[0]} · 5 依赖齐全") if not miss
                  else (FAIL, f"缺 {', '.join(miss)}"))
 
-    # --- 密钥 ---
     mk = mask_key()
     st["secret"] = ((DONE, f"{config.API_KEY_ENV}={mk}") if mk
                     else (FAIL, f".env 缺 {config.API_KEY_ENV}"))
 
-    # --- 数据 ---
     db = config.DB_DIR
     dirs = sorted(d.name for d in db.iterdir() if d.is_dir()) if db.exists() else []
     sqlites = sorted(db.glob("*/*.sqlite")) if db.exists() else []
@@ -279,7 +270,6 @@ def detect(ctx: Ctx):
         st["gate0"] = gate("gate0", "(env.json 缺失)" if not (RESULTS / "env.json").exists() else "")
     st["gate2"] = gate("gate2", "含真实调用" if led.get("gate2", {}).get("mode") == "full" else "离线")
 
-    # --- 跑组 ---
     rows = {g: count_lines(ctx.raw(g)) for g in ctx.groups}
     want = ctx.limit or FULL_ROWS
     if rows and all(v >= want for v in rows.values()):
@@ -290,7 +280,6 @@ def detect(ctx: Ctx):
     else:
         st["run"] = (TODO, f"目标 {want} 题/组：" + "/".join(ctx.groups))
 
-    # --- 判分 ---
     srows = {g: count_lines(ctx.scored(g)) for g in ctx.groups}
     if srows and all(v >= want for v in srows.values()):
         st["score"] = (DONE, " ".join(f"{g}:{v}" for g, v in srows.items()))
@@ -299,7 +288,6 @@ def detect(ctx: Ctx):
     else:
         st["score"] = (TODO, "未判分")
 
-    # --- 配对 + 离线分析 ---
     ps = pairs_of(ctx.groups)
     missing = [f"{a}-{b}" for a, b in ps
                if not (TUI_DIR / f"paired_{a}_{b}{ctx.suffix}.txt").exists()]
@@ -315,7 +303,6 @@ def detect(ctx: Ctx):
     return st
 
 
-# ---------------------------------------------------------------- 命令构造
 def build_job(step: Step, ctx: Ctx):
     k = step.key
     if k == "data":
@@ -378,7 +365,6 @@ def explain(step: Step, ctx: Ctx, state):
     return step.info
 
 
-# ---------------------------------------------------------------- 子进程
 class Child:
 
     def __init__(self, argv, tee=None):
@@ -428,7 +414,6 @@ class Child:
             self.proc.kill()
 
 
-# ---------------------------------------------------------------- 确认弹窗
 class Confirm(ModalScreen):
     CSS = """
     Confirm { align: center middle; }
@@ -462,7 +447,6 @@ class Confirm(ModalScreen):
         self.dismiss(True)
 
 
-# ---------------------------------------------------------------- 密钥录入
 class KeyScreen(ModalScreen):
     CSS = """
     KeyScreen { align: center middle; }
@@ -529,7 +513,6 @@ class KeyScreen(ModalScreen):
         self.dismiss(None)
 
 
-# ---------------------------------------------------------------- App
 class ReproApp(App):
     TITLE = "repro · BIRD Mini-Dev (SQLite)"
     SUB_TITLE = f"模型 {config.MODEL} · 500 题 / 11 库"
@@ -561,7 +544,6 @@ class ReproApp(App):
         self._kill_timer = None
         self._highlight = "data"
 
-    # ---------------- 布局
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal():
@@ -591,13 +573,11 @@ class ReproApp(App):
                 yield ProgressBar(total=None, id="bar", show_eta=True)
         yield Footer()
 
-    # ---------------- 生命周期
     def on_mount(self):
         self.refresh_steps()
         self.log_write("[b]repro TUI[/b] 就绪。左侧选步骤后按 [b]d[/b] 或点按钮执行；"
                        "[b]q[/b] 退出，[b]s[/b] 停止当前子进程。")
 
-    # ---------------- 小组件读写
     def log_write(self, text):
         self.query_one("#log", RichLog).write(text)
 
@@ -626,7 +606,6 @@ class ReproApp(App):
         idx = min(ol.highlighted, len(STEPS) - 1)
         return STEPS[idx]
 
-    # ---------------- 状态刷新
     def refresh_steps(self):
         try:
             self.ctx = self.current_ctx()
@@ -668,7 +647,6 @@ class ReproApp(App):
         if step.runnable:
             self.log_write("[dim]按 d 或点「▶ 执行选中步骤」开始。[/]")
 
-    # ---------------- 执行
     def action_run_selected(self):
         if self.busy:
             self.log_write("[yellow]有任务在跑，先按 s 停止或等它结束。[/]")
