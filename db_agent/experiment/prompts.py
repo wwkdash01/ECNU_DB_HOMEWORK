@@ -1,21 +1,4 @@
-"""prompts.py —— O 与 A 的公共起点
-
-原则①（手册 §1.3）：O 和 A 必须共享同一个 build_context() 产出，逐字相同。
-本文件是这条原则的唯一落点——两个模板都以 {context} 原样嵌入，
-差异【只】在实验设计那张表里：温度、工具、是否循环。
-
-本仓库最终只保留三组：
-
-    O1  one-shot ×1，T=0.0，无工具                       —— 基准
-    O3  one-shot 采样 ×3，T=0.7，按执行结果聚类          —— 采样投票值不值
-    A1  agent 循环 + 输出形态自检，T=0.0，run_sql        —— 回灌迭代的净贡献
-
-★ A1 ≡ 历史文档里的 "A1v2"（旧 A1 无形态自检，已随其余对照组一并移除）。
-  AGENT_SYSTEM 第 1 步的【输出形态自检】是 A1 唯一的机制改进，也是全项目唯一
-  统计显著的增益来源：EX 58.40% → 63.40%，配 McNemar 精确检验 p = 0.0059。
-  因此本模板【基线冻结】—— 任何措辞改动都会毁掉与归档结果的可比性。
-"""
-import config
+from db_agent import config
 
 AGENT_SYSTEM = """You are a SQLite expert working with a live database. You can call tools to
 inspect the database and to validate your queries before answering.

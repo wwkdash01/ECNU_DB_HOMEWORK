@@ -4,17 +4,17 @@
 text-to-SQL 上的表现。数据集 BIRD **Mini-Dev V1**（SQLite，500 题 / 11 库 / 79 表），
 判分复用官方 `execute_sql` + `calculate_ex`。
 
-仓库只保留三组实验：
+仓库只保留三组实验（**n = 500，同一批题、同一批次跑完，两两配对比较**）：
 
-| 组 | 方法 | 温度 | 工具 | 归档结果 |
-| --- | --- | --- | --- | --- |
-| `O1` | one-shot ×1 | 0.0 | — | 58.40%（基准） |
-| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 未跑全量 |
-| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%，McNemar p=0.0059 ✅** |
+| 组 | 方法 | 温度 | 工具 | EX | 相对 O1 |
+| --- | --- | --- | --- | --- | --- |
+| `O1` | one-shot ×1 | 0.0 | — | 57.80% | 基准 |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 59.40% | +1.60pt，**不显著**（p=0.0963） |
+| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **64.40%** | **+6.60pt，p=0.0007 ✅** |
 
-**结论：agent 闭环 + 输出形态自检相对 one-shot 提升 +5.0pt EX，统计显著，
-代价是 6.6 倍 token 成本。** 完整论证、代价表与剩余错误结构见
-[`实验结论.md`](实验结论.md)。
+**结论：agent 闭环 + 输出形态自检相对 one-shot 提升 +6.60pt EX，统计显著，
+代价约为 8 倍 token。** 完整论证、代价表与剩余错误结构见
+[`实验结论.md`](实验结论.md)（另一次独立运行为 +5.00pt / p=0.0059，方向与量级一致）。
 
 > `A1 ≡ 历史文档中的 "A1v2"`。其余对照组（A2~A10）的代码、归档产物与结论章节
 > 已随本次收敛移除。
@@ -35,6 +35,55 @@ conda 只负责提供一个隔离干净的 Python 解释器，第三方包统一
 | Python | `3.12.14` |
 | 环境路径 | `~/.conda/envs/db_agent` |
 | 包管理器 | conda 管 Python，pip 管第三方包 |
+
+---
+
+## 仓库结构
+
+```
+ECNU-DB-HOMEWORK/
+├── db_agent/                    # 唯一的 Python 包（所有可执行代码）
+│   ├── __main__.py              # 入口：python -m db_agent <子命令>
+│   ├── cli.py                   # 子命令 → 模块的分发表（不含业务逻辑）
+│   ├── config.py                # 单一事实源：模型名/路径/温度/MAX_STEPS/沙箱参数
+│   ├── core/                    # 与实验组无关的底层能力
+│   │   ├── data.py              #   数据加载 + build_context（O 与 A 逐字共用的起点）
+│   │   ├── db.py                #   唯一执行入口：只读连接、查询超时、QET
+│   │   ├── llm.py               #   唯一 API 出口：chat() + extract_sql()
+│   │   └── metrics.py           #   列级召回 + 幻觉率（sqlglot 解析）
+│   ├── experiment/              # 三组实验本体
+│   │   ├── run.py               #   跑组入口（--group/--limit/--concurrency/--out）
+│   │   ├── methods.py           #   run_oneshot / run_selfconsistency / run_agent
+│   │   ├── prompts.py           #   ONESHOT 与 AGENT_SYSTEM（A1 基线冻结）
+│   │   └── tools.py             #   run_sql + submit_answer，按组裁剪工具集
+│   ├── evaluation/              # 判分与统计分析
+│   │   ├── score.py             #   官方判分 → results/<group>_scored.jsonl + EX@k
+│   │   ├── paired.py            #   McNemar 精确检验 + 分层 + 翻盘题清单
+│   │   └── analyze.py           #   阶段 8 离线分析 → results/analyze.md
+│   ├── ops/                     # 运维与验收
+│   │   ├── fetch_data.py        #   下载/解压/摆正/清理 BIRD Mini-Dev
+│   │   └── gate0_check.py / gate1_check.py / gate2_check.py
+│   └── tui/
+│       └── repro_tui.py         # 复刻流程傻瓜式 TUI（Textual 8.x）
+├── data/                        # 4 个小文件已版本化；dev_databases/ 不提交（约 1.4 GB）
+├── docs/                        # doc.md（项目手册）、阶段8产出.md、requirement.pdf
+├── plan/                        # 各次改动的方案文档（重构、数据抓取、TUI 等）
+├── reference/                   # 官方评测脚本 + 参考实现/历史产物（只读对照）
+│   ├── evaluation/              #   官方 execute_sql / calculate_ex
+│   └── llm/                     #   参考 prompt、脚本与 exp_result 历史预测
+├── results/                     # 运行产物（不提交）；.tui/state.json 为 TUI 台账
+├── 实验结论.md                   # ★ 全部结论与数字（唯一结论来源）
+└── README.md                    # 本文件
+```
+
+> 根目录**不再有 `.py`**：16 个实现文件已迁入 `db_agent/` 下的
+> `core / experiment / evaluation / ops / tui`，入口统一为 `python -m db_agent <子命令>`。
+
+三条值得先知道的设计约束：
+
+1. **起点冻结**：O 组与 A 组共用同一个 `build_context`，差别只在多出来的自变量。
+2. **在线信号与离线判分分离**：agent 永远看不到答案对错，只用「执行成功/报错/几行几列」。
+3. **判分链路唯一**：所有比较都走 `score.py` + `paired.py`，不手算、不跨批次比数字。
 
 ---
 
@@ -62,6 +111,14 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   matplotlib==3.11.2 \
   python-dotenv==1.2.3
 ```
+
+可选装**复刻流程 TUI**（`repro_tui.py`）——跑实验本身不需要它：
+
+```bash
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple textual==8.2.8
+```
+
+> `fetch_data.py` 只用标准库 + 已装的 `tqdm`，**不需要额外依赖**。
 
 想省掉每次都敲 `-i`，可以先固化镜像源（写入用户级 `~/.config/pip/pip.conf`）：
 
@@ -161,7 +218,7 @@ pip install func_timeout psycopg2-binary pymysql
 ### 步骤 5 · 验收
 
 ```bash
-~/.conda/envs/db_agent/bin/python gate1_check.py
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1
 ```
 
 全部通过、退出码 0（具体项数以脚本输出为准；本项目收敛后已移除与 `desc_index`
@@ -327,35 +384,38 @@ git add -An                 # 确认 .env 不在待提交列表里
 ### 前置
 
 ```bash
-cd ~/db_agent
+cd ~/db_agent          # ← 换成你自己的仓库根目录（如本机是 test_hm/ECNU-DB-HOMEWORK）
 
 # ① 环境 + 依赖（见「快速开始」，含官方评测脚本依赖 func_timeout/psycopg2-binary/pymysql）
 conda activate db_agent
 
 # ② 数据（见「数据准备」）：把 MINIDEV 摆到 data/，生成 .jsonl，clone 官方评测脚本
-~/.conda/envs/db_agent/bin/python gate1_check.py     # 数据准备验收，应全部通过
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1     # 数据准备验收，应全部通过
 
 # ③ 密钥：.env 写入 DEEPSEEK_API_KEY=sk-...
-~/.conda/envs/db_agent/bin/python gate0_check.py     # 期望 Gate 0 通过
+~/.conda/envs/db_agent/bin/python -m db_agent gate 0     # 期望 Gate 0 通过
 ```
 
 ### 跑各组
 
 本项目**只有三组**，且三组共用同一批 500 题，逐题配对比较：
 
-| 组 | 方法 | 温度 | 工具 | 归档结果 |
+| 组 | 方法 | 温度 | 工具 | 同批次结果 |
 | --- | --- | --- | --- | --- |
-| `O1` | one-shot ×1 | 0.0 | — | 58.40% |
-| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | **未跑全量** |
-| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **63.40%（p=0.0059）** |
+| `O1` | one-shot ×1 | 0.0 | — | 57.80% |
+| `O3` | one-shot 采样 ×3 + 按执行结果聚类 | 0.7 | — | 59.40%（p=0.0963，不显著） |
+| **`A1`** | **agent 循环 + 输出形态自检** | 0.0 | `run_sql` | **64.40%（p=0.0007）** |
+
+> **`O3` 只存在于这一批次**，因此三组的绝对数字**必须同批次重跑后才能互相比较**
+> （另一次独立运行只有 O1/A1，见 `实验结论.md` §2.3）。
 
 > **`A1 ≡ 历史文档中的 "A1v2"`**：`prompts.AGENT_SYSTEM` 第 1 步的「输出形态自检」
 > 是唯一被证据支持的机制改进，因此**基线冻结**——改动措辞会毁掉与归档结果的
 > 可比性（`gate2_check.py` 有守卫）。
 
 ```bash
-# 主结果：两组都跑，然后判分 + 配对比较（O3 可选）
-for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
+# 三组都跑，然后判分 + 配对比较（O3 贵一档，可先只跑 O1/A1）
+for G in O1 O3 A1; do ~/.conda/envs/db_agent/bin/python -m db_agent run --group $G; done
 ```
 
 每组支持**断点续跑**（以 `qidx` 为 key，重复执行只补未完成部分）。
@@ -363,11 +423,66 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 冒烟（固定取前 N 条）：
 
 ```bash
-~/.conda/envs/db_agent/bin/python run.py --group A1 --limit 20 --out A1_smoke.jsonl
+~/.conda/envs/db_agent/bin/python -m db_agent run --group A1 --limit 20 --out A1_smoke.jsonl
 ```
 
 > **`--out` 很重要**：不加它，`--limit 20` 会去读 `<group>.jsonl` 的断点记录；
 > 若该文件已是全量 500 条，前 20 题会被判定"已完成"从而**一题不跑**。
+
+### 傻瓜式 TUI（覆盖上面全流程）
+
+不想手敲命令时，用 `repro_tui.py` 的全屏仪表盘，把「验收 → 跑组 → 判分 → 配对」串成 9 步：
+
+```bash
+~/.conda/envs/db_agent/bin/python -m db_agent tui
+```
+
+界面：**左侧是 9 个步骤的状态与选项，右侧是子进程实时输出与进度条**。
+子进程 stdout/stderr 原样流进右侧日志，tqdm 的 `\r` 进度被提出来喂给进度条。
+
+| 按键 | 作用 |
+| --- | --- |
+| `↑` `↓` | 在左侧步骤列表中选择（选中即打印该步状态与说明） |
+| `空格` | 勾选/取消分组（O1 / O3 / A1） |
+| `d` | 执行当前选中的步骤（**唯一执行入口**，点选不会自动跑） |
+| `r` | 刷新状态表 |
+| `s` | 停止当前子进程（先 `TERM`，5 秒未退则 `KILL`） |
+| `q` | 退出（重开自动接上，不需要重跑已完成步骤） |
+
+步骤顺序已对齐「阶段编号 0→1→2」，**Gate 0 紧跟密钥、排在数据之前**——它只依赖 `.env`，
+2 次真实调用就能暴露密钥 / tool-calling 问题，不必先等 1.4 GB 下载：
+
+| # | 步骤 | 做什么 | 产物 / 状态判据 |
+| --- | --- | --- | --- |
+| 1 | 环境 | 检查 5 个直接依赖（只检查，不执行命令） | 依赖齐全 |
+| 2 | 密钥 | 按 `d` 弹窗粘贴 `DEEPSEEK_API_KEY`，写入 `.env`（权限 600） | `.env` 可读到密钥 |
+| 3 | Gate 0 | 密钥 + tool calling（2 次真实调用，几分钱） | `results/env.json` + 台账 |
+| 4 | 数据 | 下载并摆正 Mini-Dev（11 库 / 11 sqlite） | `data/dev_databases` |
+| 5 | Gate 1 | 数据与起点验收（离线，约 15 s） | 台账 |
+| 6 | Gate 2 | 代码与埋点验收（默认离线；开关可含真实调用） | 台账 |
+| 7 | 跑组 | 按勾选的分组跑 500 题（或 `limit` 冒烟） | `results/<group>[_smoke].jsonl` |
+| 8 | 判分 | 官方 `execute_sql` + `calculate_ex` | `results/<group>*_scored.jsonl` |
+| 9 | 配对/分析 | McNemar 配对检验 + 阶段 8 离线分析 | `results/.tui/paired_*.txt`、`results/analyze.md` |
+
+**左侧控件**：`并发`（默认 20）、`limit`（留空 = 全量 500 题，填数字 = 冒烟并写独立的
+`_smoke` 文件，不会污染全量断点）、`Gate 2 含真实 API 调用` 开关。
+执行前会弹确认框给出**将执行的确切命令**；花钱的步骤（Gate 0、跑组）还给出预计成本
+（O1 ¥0.4 / O3 ¥1.2 / A1 ¥5.3，冒烟按题数折算）。
+
+> **状态判据**：有产物的步骤（数据 / 跑组 / 判分 / 配对）一律**读文件系统**判定，TUI 自己
+> 不维护进度——所以关掉重开自动接上，`run.py` 的 `qidx` 断点续跑也自动生效；只有
+> Gate 1 / Gate 2 这种「跑完什么都不留」的步骤才查台账 `results/.tui/state.json`，
+> 删掉它只会让这两步显示「未运行」。
+
+非交互场景（CI / 只想要状态表，不花钱）：
+
+```bash
+~/.conda/envs/db_agent/bin/python -m db_agent check                      # 打印 9 步状态表
+printf 'sk-...' | ~/.conda/envs/db_agent/bin/python -m db_agent set-key   # 密钥从 stdin 读
+```
+
+> `check` / `set-key` 都不启动全屏界面。TUI 只认终端，检测到 stdio 非 tty 时会直接提示
+> 改用上述命令，不会挂住。
 
 ### 配对比较（**不看这一步就会得出错误结论**）
 
@@ -376,14 +491,14 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python run.py --group $G; done
 
 ```bash
 P=~/.conda/envs/db_agent/bin/python
-for G in O1 A1; do $P score.py --group $G; done
-$P paired.py O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
+for G in O1 A1; do $P -m db_agent score --group $G; done
+$P -m db_agent pair O1_scored.jsonl A1_scored.jsonl     # McNemar 精确检验 + 分层 + 翻盘题清单
 ```
 
 ### 判分
 
 ```bash
-for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
+for G in O1 A1; do ~/.conda/envs/db_agent/bin/python -m db_agent score --group $G; done
 ```
 
 产出 `results/<group>_scored.jsonl`，含 EX、列级召回、幻觉率、逐轮 EX@k。
@@ -391,9 +506,9 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 ### 验收
 
 ```bash
-~/.conda/envs/db_agent/bin/python gate1_check.py              # 数据与起点
-~/.conda/envs/db_agent/bin/python gate2_check.py --offline    # 代码与埋点（不发 API）
-~/.conda/envs/db_agent/bin/python gate2_check.py              # 另跑 1 题 A1 做端到端校验
+~/.conda/envs/db_agent/bin/python -m db_agent gate 1              # 数据与起点
+~/.conda/envs/db_agent/bin/python -m db_agent gate 2 --offline    # 代码与埋点（不发 API）
+~/.conda/envs/db_agent/bin/python -m db_agent gate 2              # 另跑 1 题 A1 做端到端校验
 ```
 
 ### 规模与耗时（实测）
@@ -434,6 +549,7 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 | `tqdm` | 4.70.1 | 进度条 |
 | `matplotlib` | 3.11.2 | 绘图 |
 | `python-dotenv` | 1.2.3 | 从 `.env` 读取密钥 |
+| `textual` | 8.2.8 | **复刻流程 TUI**（`repro_tui.py`）；跑实验本身不需要 |
 | `func_timeout` | 4.3.5 | **官方评测脚本依赖**，给 SQL 执行加超时 |
 | `psycopg2-binary` | 2.9.13 | **官方评测脚本依赖**（postgres 分支；只跑 SQLite 也需装） |
 | `pymysql` | 1.2.3 | **官方评测脚本依赖**（mysql 分支；只跑 SQLite 也需装） |
@@ -448,6 +564,16 @@ for G in O1 A1; do ~/.conda/envs/db_agent/bin/python score.py --group $G; done
 | `anyio` | 4.15.1 |
 | `pillow` | 12.3.0 |
 | `fonttools` | 4.65.0 |
+| `rich` | 15.0.0 |
+| `pygments` | 2.21.0 |
+| `platformdirs` | 4.11.12 |
+| `markdown-it-py` | 4.2.0 |
+| `mdit-py-plugins` | 0.6.1 |
+| `linkify-it-py` | 2.2.0 |
+| `mdurl` | 0.1.2 |
+
+> 后 7 行（`rich` 起）是由 `textual` 带入的，只在装了复刻流程 TUI 依赖时出现；
+> 不装 `textual` 它们不会进入环境。
 
 ---
 

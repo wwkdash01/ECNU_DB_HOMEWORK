@@ -1,21 +1,3 @@
-"""analyze.py —— 阶段 8「报告产出」的离线分析（零 API 成本）
-
-    python analyze.py                                  # 全部指标，含 EX@k
-    python analyze.py --results-dir results/repro3     # 指定数据目录
-    python analyze.py --no-exk                         # 跳过 EX@k（快，~10s）
-
-存在理由（手册阶段 7.2 一直要求它，但从未实现）：
-    `score.py` 只判分；`paired.py` 只做配对。报告需要的另外几类产出——
-    **工具调用分布**（"模型会不会用工具"）、**延迟分解**（长尾归因）、
-    **QET 对比**（§1.5 要求 Latency 与 QET 分开报）、**成本**、
-    **`EXPLAIN QUERY PLAN` 分桶**（§3.1 DB 基础问题）、**case study 候选**——
-    此前一份都没有，全是手工临时算的。本脚本把它们固化下来。
-
-★ 为什么 EX@k 要重判（而不是从 `_scored.jsonl` 里读）：
-  `score.py` 只把【最终答案】的 `is_correct` 落盘，逐轮候选的判定没有持久化，
-  所以 `_scored.jsonl` 里没有 EX@k 所需的信息，必须重放候选 SQL 重新判分。
-  这是本脚本唯一"重"的部分（~1 分钟/组），`--no-exk` 可跳过。
-"""
 import argparse
 import json
 import statistics as st
@@ -24,18 +6,15 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-import config
-from data import get_conn
-from db import execute, QueryTimeout
+from db_agent import config
+from db_agent.core.data import get_conn
+from db_agent.core.db import execute, QueryTimeout
 
 GROUPS = ("O1", "O3", "A1")
 
-# EX@k 的候选来源必须与 score.py 完全一致，否则曲线对不上：
-#   turn.sql（模型正文作答）+ 该轮 run_sql 参数 + 该轮 submit_answer 参数
 CAND_TOOLS = ("run_sql", "submit_answer")
 
 
-# ---------------------------------------------------------------- 读数据
 def load_raw(results_dir, g):
     p = Path(results_dir) / f"{g}.jsonl"
     if not p.exists():
@@ -54,9 +33,7 @@ def drop_api_error(recs):
     return [r for r in recs if r.get("failure_type") != "api_error"]
 
 
-# ---------------------------------------------------------------- 各产出
 def five_metrics(raw, scored, results_dir):
-    """五指标（§1.5）：EX / Latency(P50,P95) / QET / 列级召回 / 幻觉率"""
     n = len(scored)
     ok = sum(r.get("is_correct") or 0 for r in scored)
     lat = sorted(r["latency_total"] for r in raw if r.get("latency_total"))
@@ -83,7 +60,6 @@ def stratified(scored):
 
 
 def tool_distribution(raw):
-    """工具调用分布 —— 回答"模型会不会用工具"（阶段 8 产出表第 5 行）"""
     names = Counter()
     turns_per_q = []
     hits_cap = 0
@@ -109,10 +85,6 @@ def tool_distribution(raw):
 
 
 def latency_decomposition(raw):
-    """延迟分解 —— 长尾归因的前提（§3.3 要求：不能把 API 抖动算到 agent 头上）
-
-    总延迟 = Σ每轮 call_latency + Σ QET + 调度/本地开销
-    """
     tot = {"call": 0.0, "qet": 0.0, "total": 0.0}
     calls = []
     per_q_call = []
@@ -153,11 +125,6 @@ def cost(raw):
 
 
 def qet_probe(scored, db_dir, timeout=2.0, desc="QET 重测"):
-    """QET —— 重新执行每组最终答案，量 SQL 在库上的真实耗时。
-
-    ★ 为什么不用 `turns[].qet`：O 组没有 `run_sql`，该字段为 None，三组不可比。
-      这里对【同一个最终答案】统一重测，才是 §1.5 要求的"Latency 与 QET 分开报"。
-    """
     vals = []
     for r in tqdm(scored, desc=desc, unit="题", ncols=88):
         sql = r.get("final_sql")
@@ -179,7 +146,6 @@ def qet_probe(scored, db_dir, timeout=2.0, desc="QET 重测"):
 
 
 def explain_buckets(scored, db_dir, desc="EXPLAIN 分桶"):
-    """EXPLAIN QUERY PLAN 分桶 —— §3.1「DB 基础问题」的量化依据"""
     feats = Counter()
     n = 0
     for r in tqdm(scored, desc=desc, unit="题", ncols=88):
@@ -210,19 +176,6 @@ def explain_buckets(scored, db_dir, desc="EXPLAIN 分桶"):
 
 
 def exk_curve(results_dir, g, gold, qs, judge):
-    """EX@k：累计 k 轮内答对即算对。
-
-    ★ 语义按组不同，报告里必须区分（score.py 也会打印这句）：
-      A 组 = "迭代到第 k 轮"；O3 = "前 k 个并行候选"；O1 = 单次调用。
-
-    ★ 为什么这是全脚本最慢的一节：它走**官方判分链路**
-      （`func_timeout(30s, execute_sql)`，每次新开 SQLite 连接、且把 gold 也跑一遍），
-      而且要对【每一轮】的每条候选都判一次 —— A1 有 1783 轮，累计约 5000 次判分。
-
-    ★ 判分缓存：key 必须含 gold。**不同题目的 gold 不同**，只按 (sql, db_id) 缓存
-      会把 A 题的判定结果套到 B 题上，是错的。同一题内模型常把同一条 SQL 重跑多轮，
-      缓存正好省掉这部分。
-    """
     raw = load_raw(results_dir, g)
     first_ok = {}
     cache = {}
@@ -252,12 +205,6 @@ def exk_curve(results_dir, g, gold, qs, judge):
                     n_hit += 1
                     ok = cache[key]
                 else:
-                    # ★ score.judge 返回的是元组 (0/1, failure_type)，不是 bool。
-                    #   写成 `if judge(...)` 会【恒为真】（非空元组恒真），必须取 [0]。
-                    #   另外下面那个 break 只能跳出【候选】循环，若不靠 solved 标志
-                    #   跳出【轮次】循环，first_ok 会被后续轮次反复覆盖 —— 两个错误
-                    #   叠加会让每条题都记在"最后一轮"，曲线于是"每组都收敛到 100%"，
-                    #   看着光滑单调，实则完全失真。
                     ok = judge(s, gsql, db_id)[0] == 1
                     cache[key] = ok
                     n_judged += 1
@@ -266,7 +213,7 @@ def exk_curve(results_dir, g, gold, qs, judge):
                     solved = True
                     break
             if solved:
-                break                      # ★ 本题已判对，不再看后续轮次
+                break
         pbar.set_postfix_str(f"实判 {n_judged}  缓存命中 {n_hit}  已判对 {len(first_ok)}")
     pbar.close()
     print(f"  [{g}] 实际判分 {n_judged} 次（缓存命中 {n_hit} 次，省 "
@@ -282,12 +229,7 @@ def exk_curve(results_dir, g, gold, qs, judge):
     return n, curve
 
 
-# ---------------------------------------------------------------- case study
 def case_study_candidates(base_dir, a_name, b_name, qs, gold, limit=3):
-    """挑出 A1 相对基线【救回】和【弄坏】的题，附上题面与两侧最终 SQL。
-
-    只做候选筛选；真正的定性分析要人读结果，脚本不替人下结论。
-    """
     A = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, a_name))}
     B = {r["qidx"]: r for r in drop_api_error(load_scored(base_dir, b_name))}
     idx = sorted(set(A) & set(B))
@@ -309,7 +251,6 @@ def case_study_candidates(base_dir, a_name, b_name, qs, gold, limit=3):
     return saved[:limit], broke[:limit], len(saved), len(broke)
 
 
-# ---------------------------------------------------------------- 输出
 def fmt_pct(x):
     return "—" if x is None else f"{x * 100:.2f}%"
 
@@ -341,7 +282,6 @@ def main():
         raise SystemExit(f"{rd} 下没有任何 <group>.jsonl / _scored.jsonl")
     P(f"可用组：{', '.join(have)}\n")
 
-    # ---- 1. 五指标 ----
     P("## 1. 五指标对比（§1.5）\n")
     P("| 指标 | " + " | ".join(have) + " |")
     P("|---" * (len(have) + 1) + "|")
@@ -359,7 +299,6 @@ def main():
     for g in have:
         P(f"- `{g}`：{m[g]['failure_type']}")
 
-    # ---- 2. 分层 EX ----
     P("\n## 2. 分层 EX\n")
     P("| 难度 | n | " + " | ".join(have) + " |")
     P("|---" * (len(have) + 2) + "|")
@@ -371,7 +310,6 @@ def main():
         P(f"| {d} | {max(ns.values())} | "
           + " | ".join(fmt_pct(exs[g]) for g in have) + " |")
 
-    # ---- 3. QET ----
     P("\n## 3. QET（§1.5 要求与 Latency 分开报）\n")
     P("统一重测各组【最终答案】在库上的执行耗时（2 s 超时），三组同口径可比。\n")
     P("| 组 | 可测题数 | P50 (ms) | P95 (ms) | 均值 (ms) |")
@@ -381,7 +319,6 @@ def main():
         if q:
             P(f"| {g} | {q['n']} | {q['P50']*1000:.2f} | {q['P95']*1000:.2f} | {q['均值']*1000:.2f} |")
 
-    # ---- 4. 延迟分解 ----
     P("\n## 4. 延迟分解（长尾归因的前提，§3.3）\n")
     P("| 组 | Σ总延迟 (s) | Σcall_latency | ΣQET | Σ调度开销 | 单次调用 P50 | 单次调用 P95 | 调用次数 |")
     P("|---|---|---|---|---|---|---|---|")
@@ -392,7 +329,6 @@ def main():
     P("\n> **读法**：若 P95 的抬升主要来自「单次调用」而非「轮数」，"
       "则结论须写成「agent 放大了 API 固有长尾」，而不是「agent 本身慢」。")
 
-    # ---- 5. 成本 ----
     P("\n## 5. 成本（token 事实，绝对金额按当期单价换算）\n")
     P("| 组 | 调用 | 输入 | 缓存命中 | 缓存未命中输入 | 输出 | 调用/题 |")
     P("|---|---|---|---|---|---|---|")
@@ -401,7 +337,6 @@ def main():
         P(f"| {g} | {c['调用']} | {c['输入']:,} | {c['缓存命中']:,} | "
           f"{c['缓存未命中输入']:,} | {c['输出']:,} | {c['调用']/len(raw[g]):.2f} |")
 
-    # ---- 6. 工具调用分布 ----
     P("\n## 6. 工具调用分布（\"模型会不会用工具\"）\n")
     for g in have:
         t = tool_distribution(raw[g])
@@ -410,7 +345,6 @@ def main():
         P(f"- `final_sql_source`：{t['final_sql_source']}")
         P(f"- submit 尝试次数分布：{t['submit 尝试次数分布']}\n")
 
-    # ---- 7. EXPLAIN 分桶 ----
     P("\n## 7. `EXPLAIN QUERY PLAN` 分桶（§3.1 DB 基础问题）\n")
     P("| 组 | 可解析 | " + " | ".join(["含 SCAN", "含 SEARCH", "含 TEMP B-TREE", "含 COVERING INDEX", "含子查询"]) + " |")
     P("|---" * 7 + "|")
@@ -422,16 +356,14 @@ def main():
     P("\n> ⚠️ SQLite 只有 B-tree、无原生 Hash 索引，清单里的「B+树 vs Hash」在 SQLite 侧做不了，"
       "作为报告局限性写明即可。")
 
-    # ---- 8. EX@k ----
     P("\n## 8. EX@k 曲线\n")
     if a.no_exk:
         P("（本次以 `--no-exk` 跳过。EX@k 需重放每轮候选并重新判分，约 1 分钟/组。）")
     else:
         P("⚠️ **语义按组不同**：A 组 = 「迭代到第 k 轮」；O3 = 「前 k 个并行候选」；O1 = 单次调用。"
           "**不可把两条曲线画在同一张图上直接比。**\n")
-        # 延迟导入：judge 依赖官方评测脚本，放在这里避免 --no-exk 时也付出 import 成本
         sys_path_insert_eval()
-        from score import judge, load_gold, load_questions  # noqa: E402
+        from db_agent.evaluation.score import judge, load_gold, load_questions  # noqa: E402
         gold = load_gold()
         qs = load_questions()
         P("| k | " + " | ".join(f"{g} 累计 EX@{g}" for g in have) + " |")
@@ -445,7 +377,6 @@ def main():
                 cells.append(f"{cur[i][2]*100:.2f}% (+{cur[i][3]})" if i < len(cur) else "—")
             P(f"| {i+1} | " + " | ".join(cells) + " |")
 
-    # ---- 9. case study 候选 ----
     P("\n## 9. case study 候选\n")
     if "A1" in have and "O1" in have:
         import_score_helpers = None

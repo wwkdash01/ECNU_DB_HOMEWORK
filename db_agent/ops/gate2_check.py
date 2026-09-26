@@ -1,10 +1,3 @@
-# gate2_check.py —— 阶段 2 验收（Gate 2）
-# 运行：~/.conda/envs/db_agent/bin/python gate2_check.py
-#
-# 大部分检查【离线】完成，不需要 API 密钥、不花钱。
-# 唯一发真实 API 调用的是「Gate 2 端到端」一节（1 次调用 + 1 次断点续跑）。
-#
-# 设计：所有检查跑完再汇总，不因单条失败而中断，方便一次看全。
 import json
 import os
 import sqlite3
@@ -14,8 +7,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-import config
-from data import (load_questions, build_context, get_conn, db_path,
+from db_agent import config
+from db_agent.core.data import (load_questions, build_context, get_conn, db_path,
                   schema_whitelist)
 
 RESULTS = []
@@ -35,35 +28,28 @@ def section(title):
     print("-" * 68)
 
 
-# ======================================================================
-# 1. db.py
-# ======================================================================
 def check_db():
     section("1. db.py —— 执行层")
-    from db import execute, QueryTimeout
+    from db_agent.core.db import execute, QueryTimeout
 
     qs = load_questions()
     db_id = qs[0]["db_id"]
     conn = get_conn(db_id)
     tbl = next(iter(schema_whitelist(db_id)))
 
-    # --- 1a 正常查询：行数 + 正的 QET ---
     r = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 5')
     check("1a 正常查询返回行数与正的 QET",
           len(r["rows"]) <= 5 and r["qet"] > 0,
           f"行数={len(r['rows'])}  QET={r['qet']:.6f}s  truncated={r['truncated']}")
 
-    # --- 1b truncated 判定：多取一行才能分辨「正好 N 行」与「被截断」 ---
-    # 注意 SQL 的 LIMIT 必须大于 row_limit，否则永远测不出截断
-    r2 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 4', row_limit=3)   # 4 行 > 3 → 截断
-    r3 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 2', row_limit=3)   # 2 行 < 3 → 未截断
+    r2 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 4', row_limit=3)
+    r3 = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 2', row_limit=3)
     check("1b truncated 判定正确",
           r2["truncated"] is True and len(r2["rows"]) == 3
           and r3["truncated"] is False and len(r3["rows"]) <= 2,
           f"LIMIT 4/row_limit 3 → truncated={r2['truncated']} 返回 {len(r2['rows'])} 行\n"
           f"       LIMIT 2/row_limit 3 → truncated={r3['truncated']} 返回 {len(r3['rows'])} 行")
 
-    # --- 1c 笛卡尔积触发 QueryTimeout ---
     big = None
     for t in sorted(schema_whitelist(db_id)):
         n = conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
@@ -82,8 +68,6 @@ def check_db():
         check("1c 笛卡尔积抛 QueryTimeout", False,
               f"抛了别的异常：{type(e).__name__}: {e}")
 
-    # --- 1d 连续调用不被前一次的过期 deadline 污染（手册未验，本仓库补充）---
-    # set_progress_handler 是连接级的；若 finally 没清干净，第二次查询会一启动就被中断
     try:
         r_first = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 1')
         r_second = execute(conn, f'SELECT * FROM "{tbl}" LIMIT 1')
@@ -95,7 +79,6 @@ def check_db():
         check("1d 连续 3 次查询均正常（进度回调未污染）", False,
               f"{type(e).__name__}: {e}")
 
-    # --- 1e 超时后连接仍可用（finally 清理生效的强证据）---
     try:
         execute(conn, f'SELECT count(*) FROM "{big[0]}" a, "{big[0]}" b, '
                       f'"{big[0]}" c, "{big[0]}" d', timeout=0.5)
@@ -108,8 +91,6 @@ def check_db():
     except Exception as e:
         check("1e 超时之后同一连接仍可查询", False, f"{type(e).__name__}: {e}")
 
-    # --- 1f 只读连接：模型生成的写操作必须失败 ---
-    # 构造【语法合法】的写语句，否则报的是语法错而不是 readonly，测不出真东西
     first_col = next(iter(schema_whitelist(db_id)[tbl]))
     wconn = sqlite3.connect(f"file:{db_path(db_id)}?mode=ro", uri=True)
     writes = [
@@ -137,12 +118,9 @@ def check_db():
     conn.close()
 
 
-# ======================================================================
-# 2. llm.py
-# ======================================================================
 def check_llm():
     section("2. llm.py —— 抽 SQL（离线）")
-    from llm import extract_sql
+    from db_agent.core.llm import extract_sql
 
     cases = [
         ("```sql fenced", "说明\n```sql\nSELECT a FROM t;\n```\n结尾", "SELECT a FROM t"),
@@ -163,17 +141,13 @@ def check_llm():
             ok = got is not None and expect in got
         check(f"2 extract_sql: {label}", ok, f"得到 {got!r}")
 
-    # 关键加固：模型只吐 DDL 时应返回 None，而不是把 DDL 当 SQL 交出去
     check("2 加固：纯 DDL 不当作可判分 SQL",
           extract_sql("CREATE TABLE students (id INT);") is None)
-    # 前导注释不应导致失败：裸文本走兜底正则从第一个 SELECT 起截取（注释被丢掉），
-    # 围栏路径则保留注释；两者都能被 SQLite 正常执行
     r = extract_sql("-- note\nSELECT a FROM t")
     check("2 前导注释场景仍能抽出 SQL",
           r is not None and "SELECT" in r,
           f"{r!r}（裸文本路径丢掉注释后再截取，属预期）")
 
-    # 硬要求：抽出物必须是一条查询，且能被 SQLite 真正执行
     probe = sqlite3.connect(":memory:")
     probe.execute("CREATE TABLE t (a INTEGER)")
     probe.execute("INSERT INTO t VALUES (1)")
@@ -190,12 +164,9 @@ def check_llm():
     probe.close()
 
 
-# ======================================================================
-# 3. prompts.py —— 起点冻结
-# ======================================================================
 def check_prompts():
     section("3. prompts.py —— 起点冻结（原则①）")
-    from prompts import oneshot_prompt, agent_system
+    from db_agent.experiment.prompts import oneshot_prompt, agent_system
 
     qs = load_questions()
     bad = []
@@ -214,35 +185,28 @@ def check_prompts():
     check("3 O 含问题原文", q0["question"] in o)
 
 
-# ======================================================================
-# 4. tools.py
-# ======================================================================
 def check_tools():
     section("4. tools.py —— 工具层")
-    from tools import dispatch, tools_for, TOOLS, SUBMIT_TOOL
+    from db_agent.experiment.tools import dispatch, tools_for, TOOLS, SUBMIT_TOOL
 
     qs = load_questions()
     db_id = qs[0]["db_id"]
     conn = get_conn(db_id)
     tbl = next(t for t, c in schema_whitelist(db_id).items() if c)
 
-    # --- 4a run_sql 成功 ---
     txt, qet = dispatch(conn, db_id, "run_sql", {"sql": f'SELECT * FROM "{tbl}" LIMIT 3'})
     check("4a run_sql 成功返回文本 + QET",
           txt.startswith("执行成功") and qet is not None and qet > 0,
           f"{txt[:90]}…")
 
-    # --- 4b 【关键设计】run_sql 不回完整结果，只给 3 行预览 ---
     check("4b run_sql 不回完整结果（只 3 行预览）",
           "预览" in txt and "预览" in txt)
-    # 更强的证据：用大表确认预览行数不超过 3
     big_tbl = max(schema_whitelist(db_id), key=lambda t: conn.execute(
         f'SELECT COUNT(*) FROM "{t}"').fetchone()[0])
     txt_big, _ = dispatch(conn, db_id, "run_sql", {"sql": f'SELECT * FROM "{big_tbl}"'})
     check("4b run_sql 预览不含完整数据", "结果被截断" in txt_big,
           f"{big_tbl}: {txt_big[:100]}…")
 
-    # --- 4c 错误返回友好字符串而非异常 ---
     try:
         out, _ = dispatch(conn, db_id, "run_sql", {"sql": "SELECT * FROM nope"})
         check("4c run_sql 错误入参返回友好文本", out.startswith("执行失败"),
@@ -251,11 +215,9 @@ def check_tools():
         check("4c run_sql 错误入参返回友好文本", False,
               f"抛了异常：{type(e).__name__}: {e}")
 
-    # --- 4g 未知工具名 ---
     out, _ = dispatch(conn, db_id, "no_such_tool", {})
     check("4g 未知工具名返回友好文本", out.startswith("未知工具"), f"{out!r}")
 
-    # --- 4h A1 工具集冻结守卫（A1 已定稿 63.40%，任何改动都会毁掉可比性）---
     n1 = {t["function"]["name"] for t in tools_for("A1")}
     check("4h A1 工具集 = run_sql + submit_answer（基线冻结）",
           n1 == {"run_sql", "submit_answer"}, f"A1={sorted(n1)}")
@@ -264,8 +226,7 @@ def check_tools():
           f"{[t['function']['name'] for t in tools_for('A1')]}")
     check("4h tools_for 对 O 组返回 None", tools_for("O1") is None)
 
-    # --- 4h1 A1 prompt 基线冻结 ---
-    from prompts import agent_system
+    from db_agent.experiment.prompts import agent_system
     a1p = agent_system("CTX")
     check("4h1 A1 prompt 含输出形态自检（唯一显著增益机制，不得删改）",
           "OUTPUT SHAPE" in a1p and "extra column" in a1p,
@@ -296,12 +257,9 @@ def check_tools():
           and SUBMIT_TOOL["function"]["parameters"]["required"] == ["sql"])
 
 
-# ======================================================================
-# 5. run.py —— 断点续跑 key
-# ======================================================================
 def check_run_resume():
     section("5. run.py —— 断点续跑 key（本仓库修正）")
-    from run import load_done
+    from db_agent.experiment.run import load_done
 
     tmp = config.RESULTS_DIR / "_gate2_resume_test.jsonl"
     tmp.parent.mkdir(exist_ok=True)
@@ -316,7 +274,6 @@ def check_run_resume():
     done = load_done(tmp)
     check("5 断点续跑按 qidx 去重", done == {0, 1, 3}, f"done={sorted(done)}")
 
-    # 用 question_id 会怎样：数据集里 137/138 各出现两次 -> 漏跑 2 题
     qs = load_questions()
     dup = {}
     for q in qs:
@@ -329,7 +286,6 @@ def check_run_resume():
     check("5 确认 question_id 确有重复（故不可用作 key）", bool(dup),
           f"重复值 {dup} → 各下标 {[v for v in dup.values()]}")
 
-    # 用真实数据集模拟：若按 question_id 去重，最终会少几条
     fake_done = set()
     kept_by_qid, kept_by_qidx = [], []
     for q in qs:
@@ -347,12 +303,9 @@ def check_run_resume():
     tmp.unlink(missing_ok=True)
 
 
-# ======================================================================
-# 6. Gate 2 端到端（唯一需要 API 的部分）
-# ======================================================================
 def check_gate2_e2e(limit=1, skip=False):
     section("6. Gate 2 端到端 —— 跑 A1 的 N 条并校验 jsonl 字段")
-    from run import main as run_main, load_done
+    from db_agent.experiment.run import main as run_main, load_done
 
     if skip:
         print("已跳过（--offline）。需要真实 API 调用：1 次 LLM + 若干工具执行。")
@@ -360,7 +313,7 @@ def check_gate2_e2e(limit=1, skip=False):
 
     out_path = config.RESULTS_DIR / "A1.jsonl"
     backup = None
-    if out_path.exists():                      # 不破坏已有结果
+    if out_path.exists():
         backup = out_path.read_bytes()
 
     try:
@@ -395,7 +348,6 @@ def check_gate2_e2e(limit=1, skip=False):
         print(f"       本轮工具调用：{tools_used or '（无）'}")
         print(f"       final_sql: {str(r.get('final_sql'))[:100]}")
 
-        # --- 断点续跑 ---
         done = load_done(out_path)
         qs = load_questions()[:limit]
         todo = [q for q in qs if q["qidx"] not in done]
@@ -409,7 +361,6 @@ def check_gate2_e2e(limit=1, skip=False):
             print(f"       已还原原有 {out_path.name}")
 
 
-# ======================================================================
 def main():
     offline = "--offline" in sys.argv
     print("=" * 68)
