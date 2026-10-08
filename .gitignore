@@ -40,3 +40,10 @@ minidev.zip
 
 # ===== 文档 =====
 plan/
+
+# ===== 办公软件临时/锁文件（LibreOffice / Word / Excel）=====
+.~lock.*#
+~$*
+
+# ===== LaTeX 源文件：只在本地保留，仓库只交付编译产物（PDF）=====
+docs/*.tex
