@@ -25,7 +25,12 @@ def load(name):
         if not line.strip():
             continue
         r = json.loads(line)
-        if r.get("failure_type") == "api_error" or "final_sql" not in r:
+        # api_error = 模型没给出答案，按严格口径计为错（不从分母剔除），
+        # 否则各组剔除量不同会系统性抬高该组 EX。旧版 score 产物无此类行，行为不变。
+        if r.get("failure_type") == "api_error":
+            d[r["qidx"]] = (0, r.get("difficulty", "?"))
+            continue
+        if "final_sql" not in r:
             continue
         d[r["qidx"]] = (int(r.get("is_correct") or 0), r.get("difficulty", "?"))
     return d

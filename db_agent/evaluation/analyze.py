@@ -10,7 +10,7 @@ from db_agent import config
 from db_agent.core.data import get_conn
 from db_agent.core.db import execute, QueryTimeout
 
-GROUPS = ("O1", "O3", "A1")
+GROUPS = ("O1", "O1P", "O3", "A0", "A0P", "A2", "A1")
 
 CAND_TOOLS = ("run_sql", "submit_answer")
 
@@ -261,7 +261,11 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-exk", action="store_true", help="跳过 EX@k（省 ~1 分钟/组）")
     ap.add_argument("--cases", type=int, default=3)
+    ap.add_argument("--model", default=None, help="provider 名（只影响报告抬头）")
     a = ap.parse_args()
+
+    if a.model:
+        config.use_provider(a.model)
 
     rd = Path(a.results_dir) if a.results_dir else (config.RESULTS_DIR / "repro3")
     if not rd.exists():
