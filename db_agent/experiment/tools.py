@@ -27,6 +27,11 @@ def _cut(s):
     return s[:config.TOOL_OUTPUT_MAX_CHARS]
 
 
+# A2 的反馈桩：与 A1 唯一不同的就是这句话的内容 —— 它不携带任何行列/报错信息。
+NO_FEEDBACK_MSG = ("执行不可用：当前会话没有数据库访问权限，无法返回行数、列名或数据预览。"
+                   "请只依据 schema 与问题本身推理，确认后调用 submit_answer 提交最终 SQL。")
+
+
 def shape_of(cols):
     return f"{len(cols)} 列（{', '.join(str(c) for c in cols)}）"
 
@@ -43,13 +48,17 @@ def _run_sql(conn, sql):
                 f"预览：{r['rows'][:3]}"), r["qet"]
 
 
-def _submit(conn, db_id, sql):
+def _submit(conn, db_id, sql, feedback=True):
     sql = (sql or "").strip().rstrip(";")
     if not sql:
         return "提交失败：sql 参数为空，请给出完整的单条查询", None
     from db_agent.core.llm import _QUERY_RE
     if not _QUERY_RE.match(sql):
         return f"提交失败：不是一条查询语句。请提交 SELECT/WITH 查询。收到：{sql[:120]}", None
+    if not feedback:
+        # 反馈消融组：只做语法形态校验，不执行、不回任何行列信息
+        return (f"已收到最终答案：{_cut(sql)}\n"
+                f"（该答案未在数据库上执行，因此不返回行列信息。）"), None
     try:
         r = execute(conn, sql)
     except Exception as e:
@@ -60,15 +69,19 @@ def _submit(conn, db_id, sql):
             f"请修正后重新提交。"), None
 
 
-def dispatch(conn, db_id, name, args):
+def dispatch(conn, db_id, name, args, feedback=True):
+    """feedback=False 时走 A2 的反馈桩：工具名与参数照旧，回灌内容不含任何执行信息。"""
     if name == "run_sql":
+        if not feedback:
+            return NO_FEEDBACK_MSG, None
         return _run_sql(conn, args.get("sql", ""))
     if name == "submit_answer":
-        return _submit(conn, db_id, args.get("sql", ""))
+        return _submit(conn, db_id, args.get("sql", ""), feedback=feedback)
     return f"未知工具：{name}", None
 
 
 def tools_for(group):
-    if group == "A1":
+    # A1：真实执行反馈；A2：同工具、同 prompt，只把回灌内容替换成桩（反馈消融）
+    if group in ("A1", "A2"):
         return [TOOLS[0], SUBMIT_TOOL]
     return None

@@ -5,18 +5,20 @@ from openai import OpenAI
 
 from db_agent import config
 
-_client = None
+# 客户端按 (base_url, api_key) 缓存：切换 provider 时无需显式清理，
+# 同一 provider 复用连接，不同 provider 各建一份。
+_clients = {}
 
 
 def _get_client():
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            api_key=config.require_api_key(),
-            base_url=config.BASE_URL,
-            timeout=config.REQUEST_TIMEOUT,
-        )
-    return _client
+    key = config.require_api_key()
+    ck = (config.BASE_URL, key)
+    cli = _clients.get(ck)
+    if cli is None:
+        cli = OpenAI(api_key=key, base_url=config.BASE_URL,
+                     timeout=config.REQUEST_TIMEOUT)
+        _clients[ck] = cli
+    return cli
 
 
 try:
@@ -28,20 +30,24 @@ except ImportError:
 
 
 def chat(messages, tools=None, temperature=None, thinking=None, max_tokens=None):
-    thinking = config.THINKING if thinking is None else thinking
-    enabled = thinking.get("type") == "enabled"
+    """单次 chat completions。provider 差异（extra_body/温度/参数名）由 config 决定。
+
+    thinking 参数保留为显式覆盖：传 None 用 provider 默认 extra_body；
+    传 dict 则临时覆盖为 {"thinking": thinking}（仅对支持该字段的厂商有意义）。
+    """
     temperature = config.TEMPERATURE if temperature is None else temperature
+    extra_body = config.EXTRA_BODY if thinking is None else {"thinking": thinking}
+    enabled = bool((extra_body or {}).get("thinking", {}).get("type") == "enabled")
     last_err = None
 
     for attempt in range(config.API_MAX_RETRIES):
-        kwargs = dict(
-            model=config.MODEL,
-            messages=messages,
-            max_tokens=config.MAX_TOKENS if max_tokens is None else max_tokens,
-            extra_body={"thinking": thinking},
-        )
-        if not enabled:
+        kwargs = dict(model=config.MODEL, messages=messages)
+        cap = config.MAX_TOKENS if max_tokens is None else max_tokens
+        kwargs[config.MAX_TOKENS_PARAM] = cap
+        if config.SEND_TEMPERATURE and not enabled:
             kwargs["temperature"] = temperature
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         if tools:
             kwargs["tools"] = tools
 
@@ -55,13 +61,20 @@ def chat(messages, tools=None, temperature=None, thinking=None, max_tokens=None)
         call_latency = time.perf_counter() - t0
 
         u = resp.usage
+        # DeepSeek 官方：prompt_cache_hit_tokens；vllm 部署：prompt_tokens_details.cached_tokens
+        hit = getattr(u, "prompt_cache_hit_tokens", 0) or 0
+        if not hit:
+            ptd = getattr(u, "prompt_tokens_details", None)
+            hit = getattr(ptd, "cached_tokens", 0) or 0
         meta = dict(
             call_latency=call_latency,
             prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(u, "completion_tokens", 0) or 0,
-            cache_hit_tokens=getattr(u, "prompt_cache_hit_tokens", 0) or 0,
-            cache_miss_tokens=getattr(u, "prompt_cache_miss_tokens", 0) or 0,
+            cache_hit_tokens=hit,
+            cache_miss_tokens=max((getattr(u, "prompt_tokens", 0) or 0) - hit, 0),
             finish_reason=getattr(resp.choices[0], "finish_reason", None),
+            provider=config.ACTIVE_PROVIDER,
+            model=config.MODEL,
         )
         return resp.choices[0].message, meta
 

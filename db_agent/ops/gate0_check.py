@@ -11,6 +11,7 @@ def main():
     dev = {
         "python": sys.version,
         "sqlite": sqlite3.sqlite_version,
+        "provider": config.ACTIVE_PROVIDER,
         "model": config.MODEL,
         "model_version": config.MODEL_VERSION,
         "thinking": config.THINKING,
@@ -28,26 +29,27 @@ def main():
 
     c = OpenAI(api_key=key, base_url=config.BASE_URL)
 
-    extra = {"thinking": config.THINKING}
+    extra = config.EXTRA_BODY or None
+    base_kwargs = dict(model=config.MODEL)
+    if config.SEND_TEMPERATURE:
+        base_kwargs["temperature"] = 0
+    if extra:
+        base_kwargs["extra_body"] = extra
 
     r = c.chat.completions.create(
-        model=config.MODEL, temperature=0,
-        max_tokens=64,
+        **{**base_kwargs, "max_tokens": 64},
         messages=[{"role": "user", "content": "say ok"}],
-        extra_body=extra,
     )
     fields = list(r.usage.model_dump().keys())
     print("\nusage 字段:", fields)
 
     r2 = c.chat.completions.create(
-        model=config.MODEL, temperature=0,
-        max_tokens=256,
+        **{**base_kwargs, "max_tokens": 256},
         messages=[{"role": "user", "content": "orders 表有多少行？"}],
         tools=[{"type": "function", "function": {
             "name": "run_sql", "description": "执行 SQL 查询",
             "parameters": {"type": "object",
                 "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}}],
-        extra_body=extra,
     )
     m = r2.choices[0].message
     tc = m.tool_calls
@@ -55,9 +57,14 @@ def main():
     print("tool_calls:", tc)
 
     print("\n===== Gate 0 =====")
-    ok_cache = all(k in fields for k in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"))
+    # 两种口径任一即可：DeepSeek 官方（顶层 prompt_cache_*_tokens）
+    # 或 vllm/OpenAI 风格（prompt_tokens_details.cached_tokens）
+    has_ds = all(k in fields for k in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"))
+    has_vllm = ("prompt_tokens_details" in fields)
+    ok_cache = has_ds or has_vllm
     ok_tool = bool(tc) and tc[0].function.name == "run_sql"
-    print(f"[{'PASS' if ok_cache else 'FAIL'}] cache 分项 token 可采集 {fields}")
+    style = "deepseek" if has_ds else ("vllm/openai" if has_vllm else "none")
+    print(f"[{'PASS' if ok_cache else 'FAIL'}] cache 分项 token 可采集（口径 {style}）{fields}")
     print(f"[{'PASS' if ok_tool else 'FAIL'}] tool calling 可用 -> {tc[0].function.name if tc else None}")
 
     if not ok_tool:

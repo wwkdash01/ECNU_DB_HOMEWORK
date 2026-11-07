@@ -43,8 +43,8 @@ FULL_ROWS  = 500
 DB_COUNT   = 11
 SMALL_FILES = ("mini_dev_sqlite.json", "mini_dev_sqlite_gold.sql",
                "mini_dev_sqlite.jsonl", "dev_tables.json")
-GROUP_COST = {"O1": 0.4, "O3": 1.2, "A1": 5.3}
-GROUP_ORDER = ("O1", "O3", "A1")
+GROUP_COST = {"O1": 0.4, "O1P": 0.4, "O3": 1.2, "A0": 0.8, "A0P": 0.8, "A2": 3.0, "A1": 5.3}
+GROUP_ORDER = ("O1", "O1P", "O3", "A0", "A0P", "A2", "A1")
 DEPS = ("openai", "sqlglot", "pandas", "tqdm", "textual")
 
 RE_TQDM = re.compile(r"(\d[\d,]*)/(\d[\d,]*)\s*[\[\(]")
@@ -64,7 +64,7 @@ class Step:
 
 STEPS = (
     Step("env",    "环境",      "conda 环境 + 5 个直接依赖", runnable=False),
-    Step("secret", "密钥",      ".env 里的 DEEPSEEK_API_KEY（按 d 录入）"),
+    Step("secret", "密钥",      ".env 里的当前模型密钥（按 d 录入，默认 DEEPSEEK_API_KEY）"),
     Step("gate0",  "Gate 0",    "密钥 + tool calling（2 次真实调用，几分钱）"),
     Step("data",   "数据",      "data/dev_databases：11 库 / 11 sqlite"),
     Step("gate1",  "Gate 1",    "数据与起点验收（离线，~15 s）"),
@@ -552,9 +552,13 @@ class ReproApp(App):
                 yield OptionList(id="steps")
                 yield Static("[b]分组[/b]（空格勾选）", classes="hint")
                 yield SelectionList(
-                    ("O1  one-shot      ¥0.4", "O1", True),
-                    ("O3  采样投票      ¥1.2", "O3", False),
-                    ("A1  agent 闭环    ¥5.3", "A1", True),
+                    ("O1   one-shot          ¥0.4", "O1", True),
+                    ("O1P  one-shot+形态     ¥0.4", "O1P", False),
+                    ("O3   采样投票          ¥1.2", "O3", False),
+                    ("A0   自反思(无形态)     ¥0.8", "A0", False),
+                    ("A0P  自反思+形态        ¥0.8", "A0P", False),
+                    ("A2   agent(反馈桩)     ¥3.0", "A2", False),
+                    ("A1   agent 闭环        ¥5.3", "A1", True),
                     id="groups", compact=True)
                 with Horizontal(id="opts"):
                     yield Input(value=str(self.ctx.concurrency), id="conc",

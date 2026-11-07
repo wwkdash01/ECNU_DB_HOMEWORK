@@ -68,7 +68,8 @@ def o3_mechanism_health(recs):
 
     static = [
         ("思考模式已关闭（否则 temperature 静默失效）",
-         config.THINKING.get("type") == "disabled", f"THINKING={config.THINKING}"),
+         config.THINKING_DISABLED,
+         f"THINKING={config.THINKING} extra_body={config.EXTRA_BODY}"),
         ("采样温度 > 0（否则三次采样必然同解）",
          config.TEMPERATURE_SAMPLING > 0, f"T={config.TEMPERATURE_SAMPLING}"),
         ("候选数 >= 2（否则投票无意义）",
@@ -93,22 +94,26 @@ def o3_mechanism_health(recs):
     print(f"      候选执行结果 : {dict(errs)}")
 
 
-def main(group, out=None):
+def main(group, out=None, model=None):
+    if model:
+        config.use_provider(model)
     gold = load_gold()
     qs = load_questions()
 
     assert len(gold) == len(qs), f"gold {len(gold)} 行 vs 题目 {len(qs)} 条"
     in_path = config.RESULTS_DIR / (out or f"{group}.jsonl")
-    recs = [json.loads(l) for l in open(in_path, encoding="utf-8")]
-    recs = [r for r in recs if r.get("failure_type") != "api_error" and "final_sql" in r]
-    print(f"[{group}] 读入 {len(recs)} 条（来自 {in_path.name}，"
-          f"已剔除 api_error 与无 final_sql 的记录）")
+    all_recs = [json.loads(l) for l in open(in_path, encoding="utf-8") if l.strip()]
+    api_err_recs = [r for r in all_recs if r.get("failure_type") == "api_error"]
+    recs = [r for r in all_recs
+            if r.get("failure_type") != "api_error" and "final_sql" in r]
+    print(f"[{group}] 读入 {len(all_recs)} 条（来自 {in_path.name}）："
+          f"可判分 {len(recs)}、api_error {len(api_err_recs)}"
+          f"（api_error 保留在产物里并计为错，见下方双口径）")
 
     if group == "O3":
         o3_mechanism_health(recs)
 
-    n_api_error = sum(1 for l in open(in_path, encoding="utf-8")
-                      if json.loads(l).get("failure_type") == "api_error")
+    n_api_error = len(api_err_recs)
 
     ex_at_k = defaultdict(lambda: defaultdict(int))
     first_ok = {}
@@ -166,8 +171,19 @@ def main(group, out=None):
 
     out_path = config.RESULTS_DIR / (
         (out.rsplit(".jsonl", 1)[0] + "_scored.jsonl") if out else f"{group}_scored.jsonl")
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass
     with open(out_path, "w", encoding="utf-8") as f:
         for r in recs:
+            f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+        for r in api_err_recs:
+            # 让产物保持完整 500 行：api_error 计为错，不当成"没跑过"
+            r = dict(r)
+            r.update({"is_correct": 0, "failure_type": "api_error", "evaluated": False,
+                      "column_recall": None, "hallucination": None,
+                      "column_recall_reason": "api_error", "hallucination_detail": "api_error"})
             f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
 
     n = len(recs)
@@ -177,7 +193,12 @@ def main(group, out=None):
         return
 
     acc = sum(r["is_correct"] for r in recs) / n * 100
-    print(f"  EX = {acc:.2f}%")
+    print(f"  EX = {acc:.2f}%   (n={n}，仅可判分样本)")
+    if n_api_error:
+        strict_n = n + n_api_error
+        strict = sum(r["is_correct"] for r in recs) / strict_n * 100
+        print(f"  严格口径 EX = {strict:.2f}%   (n={strict_n}，api_error 计为错)")
+        print(f"  → 跨组比较请统一用严格口径；两者差 {acc - strict:.2f}pt")
 
     by_diff = defaultdict(lambda: [0, 0])
     for r in recs:
@@ -233,5 +254,7 @@ if __name__ == "__main__":
     ap.add_argument("--group", required=True)
     ap.add_argument("--out", default=None,
                     help="输入文件名（默认 <group>.jsonl）；输出为同名 _scored.jsonl")
+    ap.add_argument("--model", default=None,
+                    help="provider 名（用于 O3 机制体检的静态断言；判分本身与模型无关）")
     a = ap.parse_args()
-    main(a.group, a.out)
+    main(a.group, a.out, a.model)
